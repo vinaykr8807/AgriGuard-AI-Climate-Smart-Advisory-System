@@ -1,0 +1,8 @@
+def generate_with_lora(prompt: str, model, tokenizer, max_tokens: int = 500) -> Optional[str]:
+    """Generate response using LoRA model"""
+    if model is None or tokenizer is None:
+        return None
+    
+    try:
+        import torch
+        formatted_prompt = f"<|system|>\nYou are an expert agricultural advisor.\n

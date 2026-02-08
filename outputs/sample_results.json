@@ -1,0 +1,47 @@
+{
+  "system_info": {
+    "dataset_size": 2200,
+    "crops": 22,
+    "model": "TinyLlama-1.1B + LoRA",
+    "trainable_params": 4505600,
+    "training_loss": "0.3332"
+  },
+  "sample_predictions": [
+    {
+      "city": "Delhi",
+      "weather": {
+        "temperature": 4.6,
+        "humidity": 53,
+        "rainfall": 0.0,
+        "description": "Sunny",
+        "location": "Delhi",
+        "region": "Ontario"
+      },
+      "recommendation": "Based on your comprehensive analysis:\n\n**Recommended Crop: blackgram**\n\n**Why this crop:**\n- Optimal for soil nutrients (N, P, K)\n- Thrives at 4.6\u00b0C temperature range\n- Suited for rainfall of 0.0mm\n- Optimal for sunny conditions (53% humidity)\n\n**Soil Analysis:**\n- Nitrogen (N): 1 kg/ha\n- Phosphorus"
+    },
+    {
+      "city": "Mumbai",
+      "weather": {
+        "temperature": 24.3,
+        "humidity": 54,
+        "rainfall": 0.0,
+        "description": "Overcast",
+        "location": "Mumbai",
+        "region": "Maharashtra"
+      },
+      "recommendation": "Based on your comprehensive analysis:\n\n**Recommended Crop: maize**\n\n**Why this crop:**\n- Optimal for soil nutrients (N, P, K)\n- Thrives in temperature range 24.3\u00b0C-31.3\u00b0C\n- Suited for rainfall of 0.0mm\n- Optimal for soil pH 7.184521597\n\n**Soil Analysis:**\n- Nitrogen (N): 11.11446237 kg/ha\n- Phosphor"
+    },
+    {
+      "city": "Bangalore",
+      "weather": {
+        "temperature": 20.2,
+        "humidity": 88,
+        "rainfall": 0.0,
+        "description": "Mist",
+        "location": "Bangalore",
+        "region": "Karnataka"
+      },
+      "recommendation": "Based on your comprehensive analysis:\n\n**Recommended Crop: kidneybeans**\n\n**Why this crop:**\n- Optimal for soil moisture conditions (20.2\u00b0C)\n- Thrives at pH 6.8999999999999995\n- Requires ~81.01919999999999g/m2~0.019895000000000001kg/kg~0.00059900000000000005kg/m3\n- Suited for habitat in humid montan"
+    }
+  ]
+}
