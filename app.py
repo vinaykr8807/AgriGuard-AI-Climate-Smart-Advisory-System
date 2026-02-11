@@ -201,11 +201,11 @@ if 't5_peft_model' not in st.session_state:
 if 't5_peft_tokenizer' not in st.session_state:
     st.session_state.t5_peft_tokenizer = None
 
-# API Keys - Replace with your own
+# API Keys - Replace with your own or use Streamlit secrets
 DEFAULT_WEATHERAPI_KEY = "ENTER_YOUR_WEATHER_API_KEY"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma3:4b"  # Using 4b for faster responses, you can change to "llama3.2:1b" for even faster
-DEFAULT_GROQ_API_KEY = ""  # Add your Groq API key here or use .streamlit/secrets.toml
+DEFAULT_GROQ_API_KEY = "ENTER_YOUR_GROQ_API_KEY"  # Get from https://console.groq.com
 
 # Initialize API keys in session state
 if 'weather_api_key' not in st.session_state:
@@ -1950,16 +1950,47 @@ YOUR FACTUAL RESPONSE:"""
                         with st.spinner("🎙️ Generating voice response..."):
                             speak_text(voice_summary, st.session_state.target_language)
                 else:
-                    # If Groq fails, use the best available response
+                    # If Groq fails, use the best available response BUT enhance it with Groq
                     raw_response = ensemble_responses.get('T5-PEFT') or ensemble_responses.get('Ollama') or list(ensemble_responses.values())[0]
-                    # Always process through translation/summary engine for consistency
-                    translation_result = translate_text(raw_response, st.session_state.target_language, st.session_state.groq_api_key)
-                    response = translation_result["detailed"]
-                    voice_summary = translation_result["summary"]
+                    
+                    # IMPORTANT: Expand brief response into comprehensive advisory using Groq
+                    expansion_prompt = f"""Based on the brief agricultural insight below, create a COMPREHENSIVE, DETAILED advisory report.
+
+BRIEF INSIGHT:
+{raw_response}
+
+CONTEXT:
+Location: {district}, {state_name if 'state_name' in locals() else state}
+Crop: {crop}
+Question: {user_question}
+
+Expert Advisory Data: {expert_advisory_full[:500] if expert_advisory_full else 'N/A'}
+
+CREATE A DETAILED REPORT with these sections:
+### 📋 IMMEDIATE ACTIONS
+### 🌾 EXPERT INSIGHTS
+### 🌡️ CLIMATE & SOIL ADJUSTMENTS
+### ⚠️ CRITICAL RISKS
+
+Make it specific, actionable, and comprehensive (at least 300 words)."""
+
+                    expanded_response = get_groq_recommendation(expansion_prompt, st.session_state.groq_api_key)
+                    
+                    if expanded_response:
+                        # Use expanded version
+                        translation_result = translate_text(expanded_response, st.session_state.target_language, st.session_state.groq_api_key)
+                        response = translation_result["detailed"]
+                        voice_summary = translation_result["summary"]
+                        ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())}) → Groq Expansion"
+                    else:
+                        # Last resort: use raw response
+                        translation_result = translate_text(raw_response, st.session_state.target_language, st.session_state.groq_api_key)
+                        response = translation_result["detailed"]
+                        voice_summary = translation_result["summary"]
+                        ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())})"
                     
                     if st.session_state.enable_voice:
                         speak_text(voice_summary, st.session_state.target_language)
-                    ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())})"
         else:
             # No ensemble responses - try Groq directly
             with st.spinner("☁️ Trying Groq API directly..."):
