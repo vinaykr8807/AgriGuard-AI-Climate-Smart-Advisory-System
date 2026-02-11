@@ -1,0 +1,11 @@
+def generate_with_finetuned(prompt: str, model, tokenizer, max_tokens: int = 200) -> Optional[str]:
+    """Generate response using fully finetuned model"""
+    if model is None or tokenizer is None:
+        return None
+    
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Format prompt for finetuned model
+        formatted_prompt = f"<|system|>\nYou are an agricultural expert specialized in Indian farming and state-wise crop recommendations.\n
