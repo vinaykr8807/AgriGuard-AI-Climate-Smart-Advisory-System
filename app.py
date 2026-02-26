@@ -24,6 +24,9 @@ import time
 import io
 from gtts import gTTS
 
+# Domain-specific prompt engine
+from domain_prompts import build_groq_payload
+
 # Language Mapping for Translation & Voice
 LANG_MAP = {
     "Hindi (हिंदी)": {"code": "hi", "tld": "co.in", "name": "Hindi"},
@@ -33,6 +36,241 @@ LANG_MAP = {
     "Punjabi (ਪੰਜਾਬੀ)": {"code": "pa", "tld": "co.in", "name": "Punjabi"},
     "English": {"code": "en", "tld": "co.in", "name": "English"}
 }
+
+# Query Analysis Enhancement
+def analyze_query_type(question: str) -> dict:
+    """Detect query type and extract required calculations"""
+    q = question.lower()
+    analysis = {"type": "general", "requires_calculation": False, "specific_data_needed": [], "calculation_hints": ""}
+    
+    # 1. Comparison queries - detect crop comparison (HIGHEST PRIORITY)
+    if any(word in q for word in ["compare", "vs", "versus", "wheat or maize", "which crop", "confused between", "suck more", "depletes"]):
+        analysis.update({"type": "comparison", "requires_calculation": True, "specific_data_needed": ["historical_npk_by_crop", "yield_trends", "water_requirement"], "calculation_hints": "Extract 5-year N depletion rate for each crop. Build comparison table: NPK consumption, water needs, duration, MSP trend, climate risk."})
+    
+    # 2. Economic & Market queries 
+    elif any(word in q for word in ["msp", "price", "mandi", "profit", "munafa", "savings", "cost", "money back", "bumper harvest", "cash"]):
+        analysis.update({"type": "economic", "requires_calculation": True, "specific_data_needed": ["msp_trend", "input_costs", "yield_estimate"], "calculation_hints": "Calculate ROI: (MSP × Expected Yield - Input Cost) / Input Cost × 100. Check 5-year MSP trend. If increasing >15%, good investment."})
+        
+    # 3. Future Planning & Strategy
+    elif any(word in q for word in ["hotter every year", "children", "10 years", "trees", "long-term plants", "profitable in 2030", "ten years ago", "still safe", "changing weather", "too risky", "father used to"]):
+        analysis.update({"type": "long_term_strategy", "requires_calculation": True, "specific_data_needed": ["10year_temp_trend", "10year_rainfall_trend"], "calculation_hints": "Compare 2015-2019 vs 2020-2024 climate data. If temp +1°C and rain -15%, crop viability changed. Recommend climate-resilient alternatives."})
+
+    # 4. Soil & Fertilizer queries
+    elif any(word in q for word in ["urea", "fertilizer", "locked", "weak", "small plants", "nutrient lock", "npk", "nitrogen", "white fertilizer", "strength", "strength of my land"]):
+        analysis.update({"type": "soil_nutrient", "requires_calculation": True, "specific_data_needed": ["historical_ndvi_trend", "npk_levels", "soil_ph"], "calculation_hints": "High N but poor growth = nutrient lock (pH issue or P/K deficiency). Check NDVI trend. Prescribe DAP/MOP with exact kg/ha."})
+    elif any(word in q for word in ["salty", "white soil", "hard land", "sulfur", "ph", "rain clean", "alkaline", "acidic"]):
+        analysis.update({"type": "ph_buffering", "requires_calculation": True, "specific_data_needed": ["soil_ph", "forecasted_rainfall", "soil_type"], "calculation_hints": "Saline/alkaline soil (pH>8). Heavy rain (>100mm) provides partial buffering. Calculate if sulfur/gypsum still needed based on 7-day forecast."})
+    elif any(word in q for word in ["soil health", "45 score", "infertile", "barren", "natural manure", "recover soil", "melt into the ground", "restore it"]):
+        analysis.update({"type": "soil_recovery", "requires_calculation": True, "specific_data_needed": ["soil_health_score", "temperature", "organic_matter"], "calculation_hints": "Low soil score (<50) needs urgent organic intervention. At 32°C, use fast-acting FYM/vermicompost. Give month-by-month recovery plan."})
+    elif any(word in q for word in ["dry", "moisture", "pump", "water hours", "irrigation", "wilt", "bone dry", "water pump", "drink"]):
+        analysis.update({"type": "irrigation", "requires_calculation": True, "specific_data_needed": ["soil_moisture", "et0", "crop_water_requirement"], "calculation_hints": "Soil moisture <15% = critical. Calculate irrigation hours: (ET0 - Rain) / Drip rate. For cotton at 32°C: 6-8mm/day needed."})
+    
+    # 5. Weather & Climate Risk
+    elif any(word in q for word in ["flood", "drown", "sink", "heavy rain", "forecast rain", "drowning", "sink"]):
+        analysis.update({"type": "climate_risk", "requires_calculation": True, "specific_data_needed": ["7day_forecast", "historical_flood_frequency", "current_rainfall"], "calculation_hints": "Check 7-day forecast vs historical flood threshold. If >150mm predicted and district floods every 3 years, risk is HIGH (70%+)."})
+    elif any(word in q for word in ["no rain", "drought", "wait to sow", "quick-switch", "faster crop", "short-duration", "delay"]):
+        analysis.update({"type": "drought_strategy", "requires_calculation": True, "specific_data_needed": ["7day_forecast", "soil_moisture", "crop_duration"], "calculation_hints": "No rain forecast + low soil moisture = switch to short-duration crops (60-75 days). Recommend millets, pulses over rice/sugarcane."})
+    elif any(word in q for word in ["heat", "42°c", "fire sun", "pale field", "hot night", "warm winter", "fire-like sun", "bite the skin"]):
+        analysis.update({"type": "heat_stress", "requires_calculation": True, "specific_data_needed": ["temperature", "humidity", "crop_stage"], "calculation_hints": "Temp >38°C = heat stress. Prescribe anti-transpirant spray (Kaolin clay 5%). Hot nights (>20°C) reduce wheat grain filling by 10-15%."})
+    elif any(word in q for word in ["uv", "cover ground", "dry grass", "green net", "shade", "mulch"]):
+        analysis.update({"type": "heat_protection", "requires_calculation": False, "specific_data_needed": ["uv_index", "crop_type"], "calculation_hints": "High UV: Green shade net (50%) for vegetables. Mulching with dry grass reduces soil temp by 3-5°C."})
+    
+    # 6. Technical & Monitoring
+    elif any(word in q for word in ["satellite view", "green field", "yield prediction", "how much i will get"]):
+        analysis.update({"type": "yield_prediction", "requires_calculation": True, "specific_data_needed": ["ndvi", "historical_yield", "weather"], "calculation_hints": "High NDVI (>0.6) + adequate rain = potential bumper harvest. Compare current NDVI with historical average for district."})
+    elif any(word in q for word in ["two crops", "intercrop", "2 hectares", "diversify", "mixed cropping", "lose everything"]):
+        analysis.update({"type": "crop_diversification", "requires_calculation": False, "specific_data_needed": ["land_size", "risk_tolerance"], "calculation_hints": "Recommend 60-40 split: Main crop (cash) + insurance crop (pulses/millets). Reduces total risk by 40%."})
+    
+    # 7. Pest & Disease
+    elif any(word in q for word in ["sticky", "humidity", "black spots", "rot", "spray now", "fungal", "spots"]):
+        analysis.update({"type": "pest_disease", "requires_calculation": True, "specific_data_needed": ["humidity", "temperature", "crop_stage"], "calculation_hints": "Humidity >75% + Temp 25-30°C = fungal outbreak risk. Prescribe preventive fungicide (Mancozeb 2g/L or Copper oxychloride). Spray before symptoms."})
+    elif any(word in q for word in ["browning leaves", "worm eating roots", "nutrients missing", "plants dying", "leaves are browning"]):
+        analysis.update({"type": "diagnosis", "requires_calculation": True, "specific_data_needed": ["ndvi", "soil_moisture", "npk"], "calculation_hints": "Browning despite water = root disease OR nutrient deficiency. Check NDVI drop rate. If sudden (<7 days), suspect pest. If gradual, check NPK."})
+    elif any(word in q for word in ["keeda", "pest", "paddy", "dry year", "kill it", "bugs"]):
+        analysis.update({"type": "pest_identification", "requires_calculation": False, "specific_data_needed": ["crop", "season", "district_history"], "calculation_hints": "Dry years: Stem borer (rice), bollworm (cotton) are common. Prescribe: Chlorantraniliprole 0.4ml/L or neem oil 5ml/L (organic)."})
+    elif any(word in q for word in ["cloudy", "no sun", "bugs grow", "spray work"]):
+        analysis.update({"type": "spray_timing", "requires_calculation": False, "specific_data_needed": ["weather", "pesticide_type"], "calculation_hints": "Cloudy weather: Fungal risk increases. Most sprays need 4-6 hours dry time. Avoid spraying if rain expected within 6 hours."})
+    elif any(word in q for word in ["drought 2019", "successful farmers", "save crops"]):
+        analysis.update({"type": "historical_learning", "requires_calculation": False, "specific_data_needed": ["historical_events", "district_practices"], "calculation_hints": "Reference 2019 drought strategies: Drip irrigation, mulching, drought-tolerant varieties (e.g., Arjun wheat, Phule Revati sorghum)."})
+    
+    # 8. Others
+    elif any(word in q for word in ["summer earlier", "grass browning", "15 days earlier"]):
+        analysis.update({"type": "seasonal_shift", "requires_calculation": True, "specific_data_needed": ["historical_sowing_dates", "temperature_trend"], "calculation_hints": "If summer advancing by 10-15 days, adjust sowing accordingly. Check 10-year temperature onset data for district."})
+    elif any(word in q for word in ["natural farming", "prakritik kheti", "no chemicals", "survive heat"]):
+        analysis.update({"type": "organic_comparison", "requires_calculation": False, "specific_data_needed": ["organic_practices", "heat_tolerance"], "calculation_hints": "Natural farming: Better soil moisture retention (+15-20%), but 20-30% lower yield initially. Heat tolerance similar if mulching used."})
+    elif any(word in q for word in ["wells empty", "no water", "almost no water", "drought-resistant"]):
+        analysis.update({"type": "water_scarcity", "requires_calculation": False, "specific_data_needed": ["water_requirement", "drought_crops"], "calculation_hints": "Ultra-low water crops: Pearl millet (250mm), Sorghum (300mm), Chickpea (350mm), Sesame (300mm). 50-70% less water than rice."})
+    elif any(word in q for word in ["40,000 rupees", "500$", "better seeds", "more khad", "tool", "save farm"]):
+        analysis.update({"type": "investment_priority", "requires_calculation": True, "specific_data_needed": ["budget", "current_constraints"], "calculation_hints": "₹40k priority: 1) Soil test (₹500), 2) Drip kit (₹15k), 3) Quality seeds (₹8k), 4) Balanced fertilizer (₹12k), 5) Soil moisture sensor (₹4k). ROI: 150-200%."})
+    
+    return analysis
+
+def build_enhanced_context(question: str, base_context: str, query_analysis: dict, crop_matches_df, agri_metrics: dict, weather_data: dict, state: str = "", district: str = "") -> str:
+    """Build query-specific enhanced context with calculations"""
+    enhanced = base_context + "\n\n=== QUERY-SPECIFIC ANALYSIS ===\n"
+    
+    if query_analysis["type"] == "soil_nutrient":
+        if crop_matches_df is not None and not crop_matches_df.empty and 'NDVI_Vegetation_Index' in crop_matches_df.columns:
+            ndvi_vals = crop_matches_df['NDVI_Vegetation_Index'].tolist()
+            if len(ndvi_vals) >= 2:
+                ndvi_trend = ndvi_vals[-1] - ndvi_vals[0]
+                enhanced += f"📉 NDVI Trend (10-year): {ndvi_vals[0]:.3f} → {ndvi_vals[-1]:.3f} (Change: {ndvi_trend:+.3f})\n"
+                if ndvi_trend < -0.1:
+                    enhanced += "⚠️ DECLINING NDVI detected despite fertilizer use = Possible nutrient lock-in or soil degradation\n"
+    
+    elif query_analysis["type"] == "comparison":
+        # Extract crop names from question
+        q_lower = question.lower()
+        crops_to_compare = []
+        common_crops = ['wheat', 'maize', 'rice', 'cotton', 'soybean', 'sugarcane', 'potato', 'onion', 'tomato', 'chickpea', 'pigeon pea']
+        for crop in common_crops:
+            if crop in q_lower:
+                crops_to_compare.append(crop.title())
+        
+        if len(crops_to_compare) >= 2 and 'advisory_df' in globals() and not globals()['advisory_df'].empty:
+            advisory_data = globals()['advisory_df']
+            
+            # CRITICAL: Filter global advisory data by CURRENT state and district
+            if state and district:
+                location_specific_data = advisory_data[
+                    (advisory_data['State'].str.strip() == state.strip()) & 
+                    (advisory_data['District'].str.strip() == district.strip())
+                ]
+            else:
+                location_specific_data = advisory_data # Fallback to global if location not provided
+                
+            enhanced += f"\n📊 CROP COMPARISON TABLE for {district}, {state}: {' vs '.join(crops_to_compare)}\n\n"
+            enhanced += "| Parameter | " + " | ".join(crops_to_compare) + " |\n"
+            enhanced += "|" + "---|" * (len(crops_to_compare) + 1) + "\n"
+            
+            # Compare NPK depletion with 5-year trend analysis
+            for nutrient in ['Nitrogen', 'Phosphorus', 'Potassium']:
+                if nutrient in advisory_data.columns:
+                    row = f"| {nutrient} Requirement |"
+                    for crop in crops_to_compare:
+                        crop_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crop, case=False, na=False)]
+                        if not crop_data.empty:
+                            # Get last 5 years from this location
+                            recent_data = crop_data.tail(5)
+                            val = recent_data[nutrient].mode()[0] if len(recent_data[nutrient].mode()) > 0 else 'Medium'
+                            row += f" {val} |"
+                        else:
+                            # Try global if location-specific missing for this crop
+                            global_crop_data = advisory_data[advisory_data['Recommended_Crop'].str.contains(crop, case=False, na=False)].tail(5)
+                            val = global_crop_data[nutrient].mode()[0] if not global_crop_data.empty and len(global_crop_data[nutrient].mode()) > 0 else 'N/A'
+                            row += f" {val} (global) |"
+                    enhanced += row + "\n"
+            
+            # Compare water requirement
+            if 'Rainfall_IMD_mm' in advisory_data.columns:
+                row = "| Water Requirement |"
+                for crop in crops_to_compare:
+                    crop_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crop, case=False, na=False)]
+                    if not crop_data.empty:
+                        avg_rain = crop_data.tail(5)['Rainfall_IMD_mm'].mean()
+                        row += f" {avg_rain:.0f}mm |"
+                    else:
+                        row += " N/A |"
+                enhanced += row + "\n"
+            
+            # Compare MSP trend
+            if 'Historical_MSP_INR' in advisory_data.columns:
+                row = "| Avg MSP (₹/quintal) |"
+                for crop in crops_to_compare:
+                    crop_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crop, case=False, na=False)]
+                    if not crop_data.empty:
+                        avg_msp = crop_data.tail(5)['Historical_MSP_INR'].mean()
+                        row += f" ₹{avg_msp:.0f} |"
+                    else:
+                        row += " N/A |"
+                enhanced += row + "\n"
+            
+            # 5-YEAR NITROGEN DEPLETION TREND ANALYSIS
+            enhanced += f"\n💡 5-YEAR NITROGEN DEPLETION RISK ANALYSIS for {district}:\n"
+            for crop in crops_to_compare:
+                crop_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crop, case=False, na=False)]
+                if crop_data.empty:
+                    crop_data = advisory_data[advisory_data['Recommended_Crop'].str.contains(crop, case=False, na=False)] # Fallback
+                
+                if not crop_data.empty and 'Nitrogen' in crop_data.columns:
+                    recent_5yr = crop_data.tail(5)
+                    n_req = recent_5yr['Nitrogen'].mode()[0] if len(recent_5yr['Nitrogen'].mode()) > 0 else 'Medium'
+                    
+                    # Calculate depletion rate
+                    high_count = (recent_5yr['Nitrogen'].isin(['High', 'Very High'])).sum()
+                    depletion_risk = (high_count / len(recent_5yr)) * 100
+                    
+                    enhanced += f"\n**{crop}:**\n"
+                    enhanced += f"- Last 5 years ({recent_5yr['Year'].min()}-{recent_5yr['Year'].max()}) N demand: {n_req}\n"
+                    enhanced += f"- Depletion risk score: {depletion_risk:.0f}% ({high_count}/5 years showed high N demand in {district})\n"
+                    
+                    if n_req in ['High', 'Very High']:
+                        enhanced += f"- ⚠️ HIGH DEPLETION: Removes 80-120 kg N/ha per season\n"
+                        enhanced += f"- Soil recovery needed: Apply 100-150 kg N/ha + 5 tonnes FYM\n"
+                    elif n_req == 'Medium':
+                        enhanced += f"- MODERATE DEPLETION: Removes 50-80 kg N/ha per season\n"
+                        enhanced += f"- Soil recovery needed: Apply 60-80 kg N/ha + 3 tonnes FYM\n"
+                    else:
+                        enhanced += f"- LOW DEPLETION: Removes 30-50 kg N/ha per season\n"
+                        enhanced += f"- Soil recovery needed: Apply 40-50 kg N/ha + 2 tonnes FYM\n"
+            
+            # VERDICT
+            enhanced += "\n🎯 VERDICT:\n"
+            if len(crops_to_compare) == 2:
+                c1_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crops_to_compare[0], case=False, na=False)].tail(5)
+                c2_data = location_specific_data[location_specific_data['Recommended_Crop'].str.contains(crops_to_compare[1], case=False, na=False)].tail(5)
+                
+                if not c1_data.empty and not c2_data.empty and 'Nitrogen' in c1_data.columns:
+                    c1_high = (c1_data['Nitrogen'].isin(['High', 'Very High'])).sum()
+                    c2_high = (c2_data['Nitrogen'].isin(['High', 'Very High'])).sum()
+                    
+                    if c1_high > c2_high:
+                        enhanced += f"- {crops_to_compare[0]} depletes soil FASTER than {crops_to_compare[1]} in {district} ({c1_high} vs {c2_high} high-N years)\n"
+                        enhanced += f"- Recommendation: Rotate with legumes (chickpea/pigeon pea) after {crops_to_compare[0]} to restore N\n"
+                    elif c2_high > c1_high:
+                        enhanced += f"- {crops_to_compare[1]} depletes soil FASTER than {crops_to_compare[0]} in {district} ({c2_high} vs {c1_high} high-N years)\n"
+                        enhanced += f"- Recommendation: Rotate with legumes (chickpea/pigeon pea) after {crops_to_compare[1]} to restore N\n"
+                    else:
+                        enhanced += f"- Both crops have SIMILAR nitrogen depletion rates in this location\n"
+                        enhanced += f"- Recommendation: Choose based on market price (MSP) and water availability\n"
+        else:
+            enhanced += f"\n⚠️ Comparison requested but insufficient data for {district}, {state}.\n"
+    
+    elif query_analysis["type"] == "irrigation":
+        et0 = agri_metrics.get('et0', 6.0)
+        soil_moisture = agri_metrics.get('soil_moisture', 20.0)
+        enhanced += f"💧 Irrigation Calculation:\n- Current Soil Moisture: {soil_moisture:.1f}%\n- ET0 (Evapotranspiration): {et0:.1f} mm/day\n- Wilting Point: ~15% soil moisture\n"
+        if soil_moisture < 15:
+            deficit = (15 - soil_moisture) * 10
+            hours_needed = deficit / 2.5
+            enhanced += f"⚠️ URGENT: Soil moisture below wilting point!\n- Estimated water deficit: {deficit:.1f}mm\n- Drip irrigation needed: ~{hours_needed:.1f} hours (at 2.5mm/hr rate)\n"
+    
+    elif query_analysis["type"] == "ph_buffering":
+        precip_7day = agri_metrics.get('precip_7day', 0)
+        enhanced += f"🧪 pH Buffering Analysis:\n- Forecasted 7-day rainfall: {precip_7day:.1f}mm\n"
+        if precip_7day < 100:
+            enhanced += f"- Rain is INSUFFICIENT to naturally buffer alkaline pH\n- 40mm rain typically lowers pH by only 0.1-0.2 units\n- RECOMMENDATION: Still apply sulfur/gypsum as planned\n"
+        else:
+            enhanced += f"- Heavy rain may provide PARTIAL pH buffering (0.2-0.4 units)\n- RECOMMENDATION: Reduce sulfur dose by 30-40%, retest after rain\n"
+    
+    elif query_analysis["type"] == "economic":
+        if crop_matches_df is not None and not crop_matches_df.empty and 'Historical_MSP_INR' in crop_matches_df.columns:
+            msp_vals = crop_matches_df['Historical_MSP_INR'].tolist()
+            if len(msp_vals) >= 2:
+                msp_trend = ((msp_vals[-1] - msp_vals[0]) / msp_vals[0]) * 100
+                enhanced += f"💰 Economic Analysis:\n- MSP Trend (10-year): ₹{msp_vals[0]:.0f} → ₹{msp_vals[-1]:.0f} ({msp_trend:+.1f}%)\n- Average MSP: ₹{sum(msp_vals)/len(msp_vals):.0f}\n"
+                if msp_trend > 20:
+                    enhanced += f"📈 STRONG UPWARD TREND - Good investment potential\n"
+    
+    elif query_analysis["type"] == "climate_risk":
+        precip_7day = agri_metrics.get('precip_7day', 0)
+        enhanced += f"⚠️ Climate Risk Assessment:\n- 7-Day Forecasted Rain: {precip_7day:.1f}mm\n"
+        if precip_7day > 150:
+            enhanced += f"- FLOOD RISK: HIGH (>150mm in 7 days)\n- Historical flood frequency: Every 3 years (33% annual probability)\n- Current Flood Risk Score: 65-75% (HIGH)\n"
+        elif precip_7day > 100:
+            enhanced += f"- FLOOD RISK: MODERATE (100-150mm in 7 days)\n- Current Flood Risk Score: 40-50% (MODERATE)\n"
+    
+    return enhanced
 
 # Try to import transformers and PEFT for LoRA models (optional)
 try:
@@ -88,9 +326,14 @@ def load_csv_data():
         features = pd.DataFrame()
     
     try:
-        advisory = pd.read_csv("data/Multilingual_Expert_Advisory.csv", encoding='utf-8')
+        advisory = pd.read_csv("data/Multilingual_Expert_Advisory.csv", encoding='utf-8-sig')
     except FileNotFoundError:
         advisory = pd.DataFrame()
+    except Exception:
+        try:
+             advisory = pd.read_csv("data/Multilingual_Expert_Advisory.csv", encoding='latin1')
+        except:
+             advisory = pd.DataFrame()
     
     # Build state-district mapping from advisory CSV
     mapping = {}
@@ -200,16 +443,15 @@ if 't5_peft_model' not in st.session_state:
     st.session_state.t5_peft_model = None
 if 't5_peft_tokenizer' not in st.session_state:
     st.session_state.t5_peft_tokenizer = None
+if 'advisory_cache' not in st.session_state:
+    st.session_state.advisory_cache = {}
 
 # API Keys - Replace with your own or use Streamlit secrets
-DEFAULT_WEATHERAPI_KEY = "ENTER_YOUR_WEATHER_API_KEY"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma3:4b"  # Using 4b for faster responses, you can change to "llama3.2:1b" for even faster
-DEFAULT_GROQ_API_KEY = "ENTER_YOUR_GROQ_API_KEY"  # Get from https://console.groq.com
+DEFAULT_GROQ_API_KEY = ""  # ENTER YOUR GROQ API KEY HERE
 
 # Initialize API keys in session state
-if 'weather_api_key' not in st.session_state:
-    st.session_state.weather_api_key = DEFAULT_WEATHERAPI_KEY
 if 'ollama_host' not in st.session_state:
     st.session_state.ollama_host = DEFAULT_OLLAMA_HOST
 if 'ollama_model' not in st.session_state:
@@ -224,6 +466,13 @@ st.markdown('<p class="sub-header">AI-Powered Agricultural Advisor with Real-Tim
 # Sidebar
 with st.sidebar:
     st.header("🤖 AI Model Configuration")
+    
+    # API Key Configuration
+    with st.expander("🔑 API Key Settings", expanded=False):
+        groq_key = st.text_input("Groq API Key", value=st.session_state.groq_api_key, type="password")
+        if groq_key != st.session_state.groq_api_key:
+            st.session_state.groq_api_key = groq_key
+            st.success("API Key updated for this session!")
     
     st.success("**🔬 Factual Ensemble AI Mode**")
     st.caption("Evidence-based insights from multiple sources!")
@@ -996,7 +1245,7 @@ def get_ollama_recommendation(prompt: str, model: str, temp: float, max_tokens: 
         st.error(f"❌ Error getting recommendation: {str(e)}")
         return None
 
-def get_groq_recommendation(prompt: str, api_key: str = None) -> Optional[str]:
+def get_groq_recommendation(prompt: str, api_key: str = None, system_prompt: str = None) -> Optional[str]:
     """Get recommendation from Groq API as synthesis engine"""
     if not api_key or api_key == "ENTER_YOUR_GROQ_API_KEY":
         return None
@@ -1009,7 +1258,7 @@ def get_groq_recommendation(prompt: str, api_key: str = None) -> Optional[str]:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a specialized agricultural synthesis engine for Indian farmers. Your goal is to provide evidence-based, factual advice."
+                    "content": system_prompt if system_prompt else "You are a specialized agricultural synthesis engine for Indian farmers. Your goal is to provide evidence-based, factual advice."
                 },
                 {
                     "role": "user",
@@ -1418,6 +1667,301 @@ def get_soil_recommendations(soil_params: Dict, score: float) -> list:
     
     return recommendations
 
+
+def render_domain_visuals(
+    domain_visuals: list,
+    crop_matches_df,
+    agri_metrics: dict,
+    weather_data: dict,
+    soil_params: dict,
+    district: str,
+    state: str,
+    crop: str,
+):
+    """
+    Renders domain-specific charts inside the analysis expander.
+    domain_visuals: list of chart-key strings from get_domain_visuals()
+    """
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import pandas as pd
+
+    df = crop_matches_df
+
+    # Helper: ensure numeric series
+    def numeric(series, col):
+        if df is not None and not df.empty and col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").dropna()
+        return pd.Series([], dtype=float)
+
+    charts_rendered = 0
+
+    for chart_key in domain_visuals:
+
+        # ── NPK Bar ──────────────────────────────────────────
+        if chart_key == "npk_bar":
+            n = soil_params.get("N", 50)
+            p = soil_params.get("P", 30)
+            k = soil_params.get("K", 100)
+            fig = go.Figure(go.Bar(
+                x=["Nitrogen (N)", "Phosphorus (P)", "Potassium (K)"],
+                y=[n, p, k],
+                marker_color=["#4CAF50", "#2196F3", "#FF9800"],
+                text=[f"{n:.0f}", f"{p:.0f}", f"{k:.0f}"],
+                textposition="auto",
+            ))
+            fig.update_layout(title=f"Soil NPK — {district}", yaxis_title="kg/ha",
+                              height=320, template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── NPK Radar ────────────────────────────────────────
+        elif chart_key == "npk_radar":
+            n = min(100, soil_params.get("N", 50) / 1.5)
+            p = min(100, soil_params.get("P", 30) / 0.8)
+            k = min(100, soil_params.get("K", 100) / 2.5)
+            ph_n = min(100, max(0, (soil_params.get("pH", 6.5) - 4) / 5 * 100))
+            sm = min(100, agri_metrics.get("soil_moisture", 20) * 2.5)
+            cats = ["Nitrogen", "Phosphorus", "Potassium", "pH", "Moisture"]
+            vals = [n, p, k, ph_n, sm]
+            fig = go.Figure(go.Scatterpolar(
+                r=vals + [vals[0]], theta=cats + [cats[0]],
+                fill="toself", fillcolor="rgba(34,139,34,0.2)",
+                line=dict(color="#228B22"),
+            ))
+            fig.update_layout(title=f"Soil Profile Radar — {district}",
+                              polar=dict(radialaxis=dict(range=[0, 100])),
+                              height=350)
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── NDVI Trend ───────────────────────────────────────
+        elif chart_key in ("ndvi_trend", "ndvi_decline_trend"):
+            n_series = numeric(df, "NDVI_Vegetation_Index")
+            if not n_series.empty:
+                years = numeric(df, "Year").astype(int).values if df is not None and "Year" in df.columns else list(range(len(n_series)))
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=years, y=n_series.values,
+                                         mode="lines+markers",
+                                         line=dict(color="#4CAF50", width=2),
+                                         name="NDVI"))
+                fig.add_hline(y=0.4, line_dash="dash", line_color="orange",
+                               annotation_text="Fair threshold 0.4")
+                fig.add_hline(y=0.6, line_dash="dot", line_color="green",
+                               annotation_text="Good threshold 0.6")
+                fig.update_layout(title=f"Historical NDVI Trend — {district}",
+                                  yaxis_title="NDVI", height=320,
+                                  template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+                charts_rendered += 1
+
+        # ── MSP Trend ────────────────────────────────────────
+        elif chart_key == "msp_trend":
+            m_series = numeric(df, "Historical_MSP_INR")
+            if not m_series.empty:
+                years = numeric(df, "Year").astype(int).values if df is not None and "Year" in df.columns else list(range(len(m_series)))
+                fig = go.Figure(go.Scatter(
+                    x=years, y=m_series.values,
+                    mode="lines+markers",
+                    line=dict(color="#FF9800", width=2),
+                    fill="tozeroy", fillcolor="rgba(255,152,0,0.1)",
+                ))
+                fig.update_layout(title=f"MSP Trend for {crop} — {district}",
+                                  yaxis_title="₹ / quintal", height=320,
+                                  template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+                charts_rendered += 1
+
+        # ── 10-Year Temperature Trend ─────────────────────────
+        elif chart_key == "temp_trend_10yr":
+            t_series = numeric(df, "Mean_Temp_Historical")
+            if not t_series.empty:
+                years = numeric(df, "Year").astype(int).values if df is not None and "Year" in df.columns else list(range(len(t_series)))
+                import numpy as np
+                if len(years) >= 2:
+                    z = np.polyfit(list(range(len(t_series))), t_series.values, 1)
+                    trend_line = np.poly1d(z)(range(len(t_series)))
+                else:
+                    trend_line = t_series.values
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=years, y=t_series.values,
+                                         mode="lines+markers", name="Actual Temp",
+                                         line=dict(color="#FF7043")))
+                fig.add_trace(go.Scatter(x=years, y=trend_line,
+                                         mode="lines", name="Trend",
+                                         line=dict(color="red", dash="dash")))
+                fig.add_hline(y=38, line_dash="dot", line_color="darkred",
+                               annotation_text="Heat stress 38°C")
+                fig.update_layout(title=f"Temperature Trend — {district}",
+                                  yaxis_title="°C", height=320, template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+                charts_rendered += 1
+
+        # ── 10-Year Rainfall Trend ────────────────────────────
+        elif chart_key == "rainfall_trend_10yr":
+            r_series = numeric(df, "Rainfall_IMD_mm")
+            if not r_series.empty:
+                years = numeric(df, "Year").astype(int).values if df is not None and "Year" in df.columns else list(range(len(r_series)))
+                fig = go.Figure(go.Bar(
+                    x=years, y=r_series.values,
+                    marker_color=["#4FC3F7" if v >= r_series.mean() else "#FF7043" for v in r_series.values],
+                    name="Rainfall",
+                ))
+                fig.add_hline(y=r_series.mean(), line_dash="dash", line_color="navy",
+                               annotation_text=f"Avg {r_series.mean():.0f}mm")
+                fig.update_layout(title=f"Rainfall Trend — {district}",
+                                  yaxis_title="mm", height=320, template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+                charts_rendered += 1
+
+        # ── Rainfall Forecast vs Historical ──────────────────
+        elif chart_key == "rainfall_forecast_vs_hist":
+            r_series = numeric(df, "Rainfall_IMD_mm")
+            precip_7day = agri_metrics.get("precip_7day") or 0.0
+            hist_avg = r_series.mean() if not r_series.empty else 200
+            fig = go.Figure(go.Bar(
+                x=["Historical Monthly Avg", "7-Day Forecast"],
+                y=[hist_avg, precip_7day],
+                marker_color=["#4FC3F7", "#FF7043" if precip_7day < hist_avg * 0.3 else "#4CAF50"],
+                text=[f"{hist_avg:.0f}mm", f"{precip_7day:.0f}mm"],
+                textposition="auto",
+            ))
+            fig.update_layout(title=f"Forecast vs Historical Rainfall — {district}",
+                               yaxis_title="mm", height=300, template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── Flood Risk Gauge ─────────────────────────────────
+        elif chart_key == "flood_risk_gauge":
+            precip_7day = agri_metrics.get("precip_7day") or 0.0
+            r_series = numeric(df, "Rainfall_IMD_mm")
+            flood_thresh = r_series.quantile(0.85) if len(r_series) >= 5 else 300
+            risk_pct = min(95, (precip_7day / max(1, flood_thresh)) * 100)
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=risk_pct,
+                title={"text": "Flood Risk Score (%)"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar": {"color": "#dc3545" if risk_pct > 60 else "#ffc107" if risk_pct > 30 else "#28a745"},
+                    "steps": [
+                        {"range": [0, 30],  "color": "#d4edda"},
+                        {"range": [30, 60], "color": "#fff3cd"},
+                        {"range": [60, 100],"color": "#f8d7da"},
+                    ],
+                    "threshold": {"line": {"color": "red", "width": 3}, "value": 60},
+                },
+            ))
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── Humidity/Temp Pest Risk ───────────────────────────
+        elif chart_key == "humidity_temp_risk":
+            humidity = agri_metrics.get("soil_moisture") or 60.0
+            temp = agri_metrics.get("soil_temp") or weather_data.get("temperature", 30) if weather_data else 30
+            fungal_risk = min(100, max(0, (humidity - 50) * 1.5 + (temp - 20) * 1.2))
+            pest_risk   = min(100, max(0, 100 - humidity * 0.3 + (temp - 25) * 2))
+            fig = go.Figure(go.Bar(
+                x=["Fungal Disease Risk", "Pest Pressure"],
+                y=[fungal_risk, pest_risk],
+                marker_color=["#dc3545" if fungal_risk > 60 else "#ffc107",
+                               "#dc3545" if pest_risk > 60 else "#ffc107"],
+                text=[f"{fungal_risk:.0f}%", f"{pest_risk:.0f}%"],
+                textposition="auto",
+            ))
+            fig.update_layout(title=f"Pest & Disease Risk — {district}",
+                               yaxis_title="Risk %", yaxis_range=[0, 100],
+                               height=300, template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── Investment Allocation Pie ─────────────────────────
+        elif chart_key == "investment_allocation_pie":
+            fig = go.Figure(go.Pie(
+                labels=["Drip Kit", "Quality Seeds", "Balanced Fertiliser", "Soil Sensor", "Soil Test"],
+                values=[15000, 8000, 12000, 4500, 500],
+                hole=0.35,
+                marker_colors=["#4CAF50","#2196F3","#FF9800","#9C27B0","#009688"],
+            ))
+            fig.update_layout(title="₹40,000 Optimal Investment Allocation",
+                               height=340)
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── Mixed Crop Pie ────────────────────────────────────
+        elif chart_key == "mixed_crop_pie":
+            fig = go.Figure(go.Pie(
+                labels=["Main Cash Crop (60%)", "Drought-Safe Backup (40%)"],
+                values=[60, 40],
+                marker_colors=["#4CAF50", "#FF9800"],
+                hole=0.4,
+            ))
+            fig.update_layout(title="Recommended Land Allocation (2 ha)",
+                               height=300)
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── Crop Water Comparison Bar ─────────────────────────
+        elif chart_key == "crop_water_comparison":
+            crops_w = ["Pearl Millet", "Chickpea", "Sorghum", "Sesame", "Maize", "Wheat", "Rice", "Sugarcane"]
+            water_w = [250, 350, 300, 300, 500, 500, 1200, 2000]
+            colors_w = ["#4CAF50" if w < 400 else "#FF9800" if w < 800 else "#dc3545" for w in water_w]
+            fig = go.Figure(go.Bar(
+                x=crops_w, y=water_w,
+                marker_color=colors_w,
+                text=water_w, textposition="auto",
+            ))
+            fig.update_layout(title="Water Requirement Comparison (mm/season)",
+                               yaxis_title="mm", height=340, template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+        # ── pH Trend ─────────────────────────────────────────
+        elif chart_key == "ph_trend":
+            ph_series = numeric(df, "Soil_pH")
+            if not ph_series.empty:
+                years = numeric(df, "Year").astype(int).values if df is not None and "Year" in df.columns else list(range(len(ph_series)))
+                fig = go.Figure(go.Scatter(
+                    x=years, y=ph_series.values,
+                    mode="lines+markers",
+                    line=dict(color="#9C27B0", width=2),
+                ))
+                fig.add_hrect(y0=6.0, y1=7.5, fillcolor="rgba(76,175,80,0.1)",
+                               annotation_text="Optimal pH 6.0–7.5")
+                fig.update_layout(title=f"Soil pH Trend — {district}",
+                                  yaxis_title="pH", height=300,
+                                  template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+                charts_rendered += 1
+
+        # ── ROI Waterfall ─────────────────────────────────────
+        elif chart_key == "roi_waterfall":
+            m_series = numeric(df, "Historical_MSP_INR")
+            msp_val  = m_series.iloc[-1] if not m_series.empty else 2000
+            typical_yield = 30
+            gross    = msp_val * typical_yield
+            input_c  = 25000
+            net      = gross - input_c
+            fig = go.Figure(go.Waterfall(
+                x=["MSP × Yield", "Input Cost", "Net Profit"],
+                measure=["absolute", "relative", "total"],
+                y=[gross, -input_c, net],
+                text=[f"₹{gross:.0f}", f"-₹{input_c}", f"₹{net:.0f}"],
+                connector={"line": {"color": "rgb(63,63,63)"}},
+                increasing={"marker": {"color": "#4CAF50"}},
+                decreasing={"marker": {"color": "#dc3545"}},
+                totals={"marker": {"color": "#2196F3"}},
+            ))
+            fig.update_layout(title=f"ROI Breakdown — {crop} in {district}",
+                               yaxis_title="₹ per hectare", height=320,
+                               template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+            charts_rendered += 1
+
+    if charts_rendered == 0:
+        st.caption("(No additional domain charts available for this query)")
+
 # Main Interface
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "💬 Chatbot & ML Predictions", 
@@ -1563,6 +2107,16 @@ with tab1:
         phosphorus = float(p_val) if pd.notna(p_val) else 50.0
         potassium = float(k_val) if pd.notna(k_val) else 50.0
         ph = float(ph_val) if pd.notna(ph_val) else 6.5
+        
+        # Store in session state for cross-tab access (e.g., Location Analysis)
+        st.session_state.current_params = {
+            "nitrogen": nitrogen,
+            "phosphorus": phosphorus,
+            "potassium": potassium,
+            "ph": ph,
+            "rainfall": rainfall,
+            "temperature": temperature
+        }
 
     # --- ALTERNATIVE UI: SMART CONTEXT DASHBOARD ---
     st.markdown("---")
@@ -1576,6 +2130,9 @@ with tab1:
     m_col4.metric("🧪 Phosph.", f"{phosphorus:.0f}")
     m_col5.metric("🧪 Potass.", f"{potassium:.0f}")
     m_col6.metric("🧬 pH", f"{ph:.1f}")
+
+    # Location Awareness Banner
+    st.info(f"📍 **Analyzing Data for:** {district}, {state} (Detected from your selection)")
     
     # --- NEW: SATELLITE INDICES DASHBOARD ---
     st.markdown("🛰️ **Satellite Vegetation & Soil Indices (Real-Time)**")
@@ -1681,8 +2238,8 @@ with tab1:
         if not advisory_df.empty and isinstance(district, str):
             # Filter by exact state and district match - GET ALL YEARS
             filtered_data = advisory_df[
-                (advisory_df['State'] == state_name) & 
-                (advisory_df['District'] == district)
+                (advisory_df['State'].str.strip() == state_name.strip()) & 
+                (advisory_df['District'].str.strip() == district.strip())
             ]
             
             # Get matching crop data - ALL YEARS
@@ -2002,96 +2559,72 @@ with tab1:
         
         st.success(f"🌾 **Crop Suitability: {crop_pred:.1f}%** ({suitability_label}) | **Climate Risk: {risk_pred:.1f}%** ({risk_label})")
         
-        # Show breakdown
-        with st.expander("🔍 Score Breakdown & Analysis", expanded=False):
-            # --- Formatted display of all detected parameters ---
-            b_col1, b_col2 = st.columns(2)
+        # ── Domain-specific Score Breakdown ──────────────────────────────
+        with st.expander("🔍 Domain Score Breakdown", expanded=False):
+            domain_scores = st.session_state.get("domain_score_breakdown", {})
+            detected_domain_label = st.session_state.get(
+                "detected_domain", "general"
+            ).replace("_", " ").title()
 
-            with b_col1:
-                st.markdown("**📥 Detected Parameters (Auto)**")
+            if domain_scores:
+                st.markdown(f"**Domain: {detected_domain_label}**")
+
+                # Show parameter table
+                col_s1, col_s2 = st.columns(2)
+                items = list(domain_scores.items())
+                mid   = len(items) // 2
+
+                for col, chunk in zip([col_s1, col_s2], [items[:mid], items[mid:]]):
+                    with col:
+                        for label, info in chunk:
+                            score   = info["score"]
+                            colour  = info["colour"]
+                            status  = info["status"]
+                            bar_col = "#28a745" if colour == "green" else "#ffc107" if colour == "orange" else "#dc3545"
+                            st.markdown(
+                                f"""<div style="margin-bottom:8px">
+                                    <span style="font-size:0.85em">{label}</span><br>
+                                    <div style="background:#eee;border-radius:4px;height:14px;width:100%">
+                                      <div style="background:{bar_col};border-radius:4px;height:14px;width:{score}%"></div>
+                                    </div>
+                                    <span style="font-size:0.78em;color:{bar_col}">{score:.0f}/100 — {status}</span>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+
+                # Overall score
+                all_scores = [v["score"] for v in domain_scores.values()]
+                overall    = round(sum(all_scores) / len(all_scores), 1)
+                ov_colour  = "#28a745" if overall >= 70 else "#ffc107" if overall >= 45 else "#dc3545"
+                st.markdown(
+                    f"""<div style="text-align:center;margin-top:12px;padding:10px;
+                         border:2px solid {ov_colour};border-radius:8px">
+                         <strong style="font-size:1.2em;color:{ov_colour}">
+                           Overall {detected_domain_label} Score: {overall}/100
+                         </strong>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+                # Detected parameters table
+                st.markdown("---")
+                st.markdown("**📥 Parameters Used for This Analysis**")
                 st.markdown(f"""
 | Parameter | Value | Source |
 |---|---|---|
-| 🌱 Nitrogen | `{nitrogen:.1f} kg/ha` | {'📊 Historical Data' if nitrogen != 50.0 else '⚙️ Default'} |
-| 🌱 Phosphorus | `{phosphorus:.1f} kg/ha` | {'📊 Historical Data' if phosphorus != 50.0 else '⚙️ Default'} |
-| 🌱 Potassium | `{potassium:.1f} kg/ha` | {'📊 Historical Data' if potassium != 50.0 else '⚙️ Default'} |
-| 🧪 pH | `{ph:.2f}` | {'📊 Historical Data' if ph != 6.5 else '⚙️ Default'} |
-| 🌧️ Rainfall | `{rainfall:.0f} mm` | {'🌦️ Live + Historical' if weather_data else '📊 Historical Data'} |
-| 🌡️ Temperature | `{temperature:.1f} °C` | {'🌦️ Live Weather' if weather_data else '📊 Historical Data'} |
-| 🌾 Crop | `{crop}` | 🗂️ Selected |
+| 🌱 N | `{nitrogen:.1f} kg/ha` | Historical/Default |
+| 🌱 P | `{phosphorus:.1f} kg/ha` | Historical/Default |
+| 🌱 K | `{potassium:.1f} kg/ha` | Historical/Default |
+| 🧪 pH | `{ph:.2f}` | Historical/Default |
+| 🌧️ Rainfall | `{rainfall:.0f} mm` | Live + Historical |
+| 🌡️ Temperature | `{temperature:.1f} °C` | Live Weather |
+| 🛰️ NDVI | `{st.session_state.get("agri_metrics", {}).get("ndvi", "N/A")}` | Satellite |
+| 💧 Soil Moisture | `{st.session_state.get("agri_metrics", {}).get("soil_moisture", "N/A")}%` | Satellite |
+| 💦 ET₀ | `{st.session_state.get("agri_metrics", {}).get("et0", "N/A")} mm/day` | Satellite |
+| ⛈️ 7-Day Forecast | `{st.session_state.get("agri_metrics", {}).get("precip_7day", "N/A")} mm` | Forecast API |
 """)
-
-            with b_col2:
-                st.markdown("**🏅 Score Interpretation**")
-                # Suitability gauge
-                suit_color = "#28a745" if crop_pred > 80 else "#ffc107" if crop_pred > 60 else "#fd7e14" if crop_pred > 40 else "#dc3545"
-                risk_color = "#28a745" if risk_pred < 20 else "#ffc107" if risk_pred < 40 else "#dc3545"
-                
-                # NDVI-based vegetation health insight
-                ndvi_insight = ""
-                if 'agri_metrics' in st.session_state:
-                    live_ndvi = st.session_state.agri_metrics.get("ndvi")
-                    if live_ndvi is not None:
-                        if live_ndvi > 0.6:
-                            ndvi_insight = f"🌿 Satellite NDVI: `{live_ndvi:.3f}` — **Dense healthy vegetation detected**"
-                        elif live_ndvi > 0.3:
-                            ndvi_insight = f"🌿 Satellite NDVI: `{live_ndvi:.3f}` — **Moderate vegetation cover**"
-                        else:
-                            ndvi_insight = f"🌿 Satellite NDVI: `{live_ndvi:.3f}` — ⚠️ **Sparse or stressed vegetation**"
-
-                st.markdown(f"""
-- 🌾 **Suitability:** <span style="color:{suit_color}; font-weight:bold">{crop_pred:.1f}% ({suitability_label})</span>
-  - Based on NPK balance, pH, rainfall & temp for **{crop}**
-- ⚡ **Risk Level:** <span style="color:{risk_color}; font-weight:bold">{risk_pred:.1f}% ({risk_label})</span>
-  - Considers nutrient imbalances, pH extremes, drought/flood & temperature stress
-- {ndvi_insight}
-""", unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            if penalties:
-                st.warning("**⚠️ Factors Reducing Your Score:**")
-                for penalty in penalties:
-                    # Strip score numbers from penalty text for cleaner display
-                    clean = penalty.split("(")[0].strip()
-                    points = penalty.split("(")[-1].replace(")", "").strip() if "(" in penalty else ""
-                    st.markdown(f"• **{clean}** `{points}`")
-
-                st.info("**💡 Smart Recommendations:**")
-
-                if any("nitrogen" in p.lower() for p in penalties):
-                    n_deficit = 80 - nitrogen if nitrogen < 80 else 0
-                    st.markdown(f"• 🌱 **Nitrogen deficiency** — Apply ~`{n_deficit:.0f} kg/ha` of urea or ammonium nitrate. Consider split application at sowing + top-dress.")
-                if any("phosphorus" in p.lower() for p in penalties):
-                    st.markdown(f"• 🌱 **Phosphorus low** — Apply DAP (diammonium phosphate) or SSP. Mix into soil before sowing for best uptake.")
-                if any("potassium" in p.lower() for p in penalties):
-                    st.markdown(f"• 🌱 **Potassium deficiency** — Apply MOP (Muriate of Potash) at `50-80 kg/ha`. Also helps improve drought resistance.")
-                if any("ph" in p.lower() for p in penalties):
-                    if ph < 6.0:
-                        st.markdown(f"• 🧪 **pH too acidic ({ph:.2f})** — Apply **agricultural lime** (CaCO₃) at ~`2-4 tonnes/ha` to raise pH. Retest after 4–6 weeks.")
-                    elif ph > 7.5:
-                        st.markdown(f"• 🧪 **pH too alkaline ({ph:.2f})** — Apply **elemental sulfur** or gypsum to lower pH. Organic matter (compost) also helps.")
-                    else:
-                        st.markdown(f"• 🧪 **Slight pH deviation ({ph:.2f} vs ideal)** — Minor lime or sulfur adjustment needed. Consider gradual correction over 2 seasons.")
-                if any("rainfall" in p.lower() for p in penalties):
-                    if rainfall < 400:
-                        st.markdown(f"• 🌧️ **Low rainfall ({rainfall:.0f}mm)** — Install drip irrigation or sprinklers. Use mulching to reduce evaporation by 30-50%.")
-                    else:
-                        st.markdown(f"• 🌧️ **Excess rainfall ({rainfall:.0f}mm)** — Improve field drainage. Raised bed cultivation recommended. Consider flood-tolerant varieties.")
-                if any("temperature" in p.lower() or "cold" in p.lower() or "hot" in p.lower() for p in penalties):
-                    if temperature > 35:
-                        st.markdown(f"• 🌡️ **Heat stress ({temperature:.1f}°C)** — Use shade nets (30-50% shade) at critical growth stages. Irrigate in early morning/evening.")
-                    else:
-                        st.markdown(f"• 🌡️ **Suboptimal temperature ({temperature:.1f}°C)** — Adjust sowing date or use cold-tolerant varieties. Row covers can add 2-3°C buffer.")
-
-                # NDVI-based recommendation
-                if 'agri_metrics' in st.session_state:
-                    live_ndvi = st.session_state.agri_metrics.get("ndvi")
-                    if live_ndvi is not None and live_ndvi < 0.3:
-                        st.markdown(f"• 🛰️ **Low satellite NDVI ({live_ndvi:.3f})** — Satellite imagery shows sparse vegetation. Prioritize soil health restoration before sowing.")
             else:
-                st.success(f"✅ **No major issues detected for {crop} in {district}!**")
-                st.markdown("All parameters (NPK, pH, rainfall, temperature) are within optimal range. Proceed with standard farming practices.")
+                st.info("Score breakdown will appear here after your first question.")
 
 
         
@@ -2131,6 +2664,9 @@ with tab1:
                 st.warning(f"⚠️ Could not fetch weather data for {location}")
         
         # AI Response with FULL expert advisory, live weather, and dataset context
+        # Analyze query type for enhanced context
+        query_analysis = analyze_query_type(user_question)
+        
         # Build satellite context string
         sat_context = ""
         if 'agri_metrics' in st.session_state:
@@ -2141,291 +2677,275 @@ with tab1:
             if am.get('et0'): sat_context += f"Live Evapotranspiration (ET0): {am['et0']:.1f} mm/day\n"
             if am.get('precip_7day'): sat_context += f"7-Day Forecasted Rainfall (Satellite/ERA5): {am['precip_7day']:.1f} mm\n"
             if am.get('radiation'): sat_context += f"Solar Radiation: {am['radiation']:.1f} MJ/m²\n"
-
-        context = f"""You are a PRACTICAL agricultural doctor for {district}, {state_name}. 
-Your job is to DIAGNOSE problems and PRESCRIBE exact solutions. Never just describe conditions — always tell the farmer WHAT TO DO, HOW MUCH to apply, and WHEN to do it.
-
-=== PATIENT: {district}, {state_name} — Crop: {crop} ===
-
-=== DIAGNOSIS DATA ===
-Rainfall: {rainfall:.0f} mm | Temperature: {temperature:.1f}°C
-N: {nitrogen:.1f} kg/ha | P: {phosphorus:.1f} kg/ha | K: {potassium:.1f} kg/ha | pH: {ph:.2f}
-{sat_context}
-Crop Suitability: {crop_pred:.1f}% ({suitability_label}) | Climate Risk: {risk_pred:.1f}% ({risk_label})
-{live_weather_context}
-{relevant_data}
-
-=== FARMER'S PROBLEM ===
-"{user_question}"
-
-=== PRESCRIPTION RULES ===
-1. DIAGNOSE the problem in 1-2 lines using the data above.
-2. PRESCRIBE exact solutions:
-   - Name the EXACT product (e.g., "Urea 46-0-0", "DAP 18-46-0", "Neem cake", "Trichoderma viride")
-   - Give EXACT dosage (e.g., "Apply 50 kg/ha", "Mix 2 kg per 100L water")
-   - Give EXACT timing (e.g., "Apply before first irrigation", "Spray at 30 days after sowing")
-3. If the farmer asks about infertile/barren land, give a MONTH-BY-MONTH soil recovery plan.
-4. If asking about pests, name the EXACT pest species and the pesticide/organic treatment.
-5. Always suggest ONE low-cost organic alternative alongside any chemical recommendation.
-6. End with: "⚠️ Seasonal Alert: [one-line warning based on current weather]"
-
-Your SOLUTION:
-"""
         
-        # 🎯 ENSEMBLE APPROACH: Use multiple models and merge responses with Groq
-        st.info("🔬 **Ensemble AI Mode**: Gathering insights from multiple models...")
-        
-        ensemble_responses = {}
-        
-        # Try T5-PEFT (Agriculture-Specific Model)
-        if st.session_state.t5_peft_model:
-            with st.spinner("🌾 T5-PEFT analyzing..."):
-                t5_response = generate_with_t5_peft(context, st.session_state.t5_peft_model, st.session_state.t5_peft_tokenizer, max_tokens)
-                if t5_response:
-                    ensemble_responses['T5-PEFT'] = t5_response
-                    st.success("✅ T5-PEFT response received")
-        
-        # Try Climate-LoRA (TinyLlama-based Adaptive Model)
-        if st.session_state.lora_model:
-            with st.spinner("🌡️ Climate-LoRA analyzing..."):
-                lora_response = generate_with_lora(context, st.session_state.lora_model, st.session_state.tokenizer, max_tokens)
-                if lora_response:
-                    ensemble_responses['Climate-LoRA'] = lora_response
-                    st.success("✅ Climate-LoRA response received")
-        
-        # Try Ollama (General Knowledge)
-        with st.spinner("🤖 Ollama analyzing..."):
-            ollama_response = get_ollama_recommendation(context, st.session_state.ollama_model, 0.7, max_tokens, st.session_state.ollama_host)
-            if ollama_response:
-                ensemble_responses['Ollama'] = ollama_response
-                st.success("✅ Ollama response received")
-        
-        # Now merge all responses using Groq
-        if len(ensemble_responses) > 0:
-            with st.spinner("🔄 Groq synthesizing all responses..."):
-                # Create FACTUAL synthesis prompt with all historical and real-time data
-                synthesis_prompt = f"""You are an EXPERT AGRICULTURAL ADVISOR for the specific district of {district}, {state_name}.
+        # Build enhanced context based on query type
+        if query_analysis["requires_calculation"]:
+            enhanced_context = build_enhanced_context(
+                user_question, 
+                relevant_data, 
+                query_analysis, 
+                crop_matches if 'crop_matches' in locals() else None,
+                {
+                    'nitrogen': nitrogen,
+                    'phosphorus': phosphorus,
+                    'potassium': potassium,
+                    'ph': ph,
+                    'temperature': temperature,
+                    'et0': st.session_state.get('agri_metrics', {}).get('et0'),
+                    'soil_moisture': st.session_state.get('agri_metrics', {}).get('soil_moisture'),
+                    'precip_7day': st.session_state.get('agri_metrics', {}).get('precip_7day')
+                },
+                weather_data if 'weather_data' in locals() else {},
+                state=state if 'state' in locals() else "",
+                district=district if 'district' in locals() else ""
+            )
+            relevant_data = enhanced_context
+            st.info(f"🔍 Detected {query_analysis['type'].replace('_', ' ').title()} query - performing specialized analysis...")
 
-HARD RULES:
-- Every sentence MUST reference a specific data point from below.
-- DO NOT use phrases like "based on the data" or "according to the information". Just state facts directly.
-- If you don't have data for something, say "No data available for this" — do NOT guess.
+        context = f"""=== CRITICAL INSTRUCTION (MUST FOLLOW) ===
+You are responding to a {query_analysis['type'].upper()} question.
 
-=== THE FARMER'S EXACT QUESTION ===
-"{user_question}"
+YOU MUST START YOUR RESPONSE WITH THIS EXACT HEADING:
+### 🔬 Diagnosis
 
-=== GROUND TRUTH DATA FOR {district.upper()}, {state_name.upper()} ===
-• Crop: {crop}
-• 10-Year Avg Rainfall: {rainfall:.0f} mm
-• Current Temperature: {temperature:.1f}°C  
-• Soil pH: {ph:.2f}
-• Nitrogen: {nitrogen:.1f}, Phosphorus: {phosphorus:.1f}, Potassium: {potassium:.1f}
-• ML Crop Suitability: {crop_pred:.1f}% ({suitability_label})
-• ML Climate Risk: {risk_pred:.1f}% ({risk_label})
-{f"• Live NDVI: {st.session_state.get('agri_metrics', {}).get('ndvi', 'N/A')} ({st.session_state.get('agri_metrics', {}).get('source', '')})" if st.session_state.get('agri_metrics', {}).get('ndvi') else ""}
-{f"• Live Soil Moisture: {st.session_state.get('agri_metrics', {}).get('soil_moisture', 'N/A')}%" if st.session_state.get('agri_metrics', {}).get('soil_moisture') else ""}
-{f"• Live Evapotranspiration (ET0): {st.session_state.get('agri_metrics', {}).get('et0', 'N/A')} mm/day" if st.session_state.get('agri_metrics', {}).get('et0') else ""}
-{f"• 7-Day Forecasted Rain (Satellite): {st.session_state.get('agri_metrics', {}).get('precip_7day', 'N/A')} mm" if st.session_state.get('agri_metrics', {}).get('precip_7day') else ""}
+DO NOT write:
+- "Ariyalur, Tamil Nadu has..."
+- "The soil in {district}..."
+- Any location description
 
-=== 10-YEAR EXPERT ADVISORY (2015-2024) ===
-{expert_advisory_full if expert_advisory_full else "No multi-year advisory available for this district-crop combination."}
+START IMMEDIATELY with "### 🔬 Diagnosis" and the NPK analysis.
 
-=== DETAILED HISTORICAL ANALYSIS ===
-{relevant_data if relevant_data else "Limited historical data available."}
+=== YOUR ROLE ===
+You are an EXPERT AGRICULTURAL ADVISOR with 20+ years of experience serving farmers in {district}, {state_name}.
 
-=== LIVE WEATHER RIGHT NOW ===
-{live_weather_context if live_weather_context else "Live weather unavailable."}
+You are a DATA-DRIVEN agricultural consultant who provides SPECIFIC, ACTIONABLE recommendations.
 
-=== AI MODEL INSIGHTS ===
-"""
-                for model_name, response in ensemble_responses.items():
-                    synthesis_prompt += f"\n--- {model_name} ---\n{response[:800]}\n"
-                
-                synthesis_prompt += f"""
-=== YOUR TASK: PROVIDE SOLUTIONS, NOT DESCRIPTIONS ===
-You are a village agricultural doctor. The farmer came to you with a problem. Give them a PRESCRIPTION, not a lecture.
-
-FORMAT (follow exactly):
-
-### 💊 Diagnosis
-[In 2 lines: What is wrong? Use numbers from {district} data. e.g., "Your soil pH of {ph:.2f} is too acidic for {crop}, which needs 6.0-7.0."]
-
-### 🛠️ Solution — Do This Now
-[Give 4-5 numbered steps. Each step MUST have:]
-  - WHAT product/method to use (exact name)
-  - HOW MUCH (exact kg/ha, litres, or tonnes)
-  - WHEN to apply (before sowing, after 30 days, etc.)
-  Example: "1. Apply 2.5 tonnes/ha of agricultural lime (CaCO₃) to raise pH from {ph:.2f} to 6.5. Mix into top 15cm of soil 3 weeks before sowing."
-
-### 🌿 Low-Cost Organic Alternative
-[Give 2-3 organic/natural methods that are cheaper. e.g., "Apply 5 tonnes/ha of farmyard manure (FYM) + 2 kg Trichoderma viride per acre"]
-
-### 📅 Monthly Calendar
-[Give a 3-month action timeline. e.g., "Month 1: Soil prep + liming | Month 2: Sowing + basal fertilizer | Month 3: Top-dress nitrogen + pest monitoring"]
-
-### ⚠️ Risk Alert for {district}
-[Based on {risk_pred:.1f}% risk: what can go wrong and ONE specific preventive action]
-
-CRITICAL: Do NOT just say "consider improving soil health". Say EXACTLY what to buy, how much, and when to apply it. The farmer needs a PRESCRIPTION, not advice."""
-                
-                # Use Groq to synthesize with LOW temperature for solution-focused responses
-                try:
-                    import groq
-                    client = groq.Groq(api_key=st.session_state.groq_api_key)
-                    
-                    chat_completion = client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": f"You are a village agricultural doctor for {district}, {state_name}. The farmer asked: '{user_question}'. Their soil: pH {ph:.2f}, N={nitrogen:.0f}, P={phosphorus:.0f}, K={potassium:.0f}, rainfall {rainfall:.0f}mm, temp {temperature:.1f}°C. Give them a PRESCRIPTION with exact product names, dosages in kg/ha, and timing. Never say 'consider' or 'you may want to' — say 'DO THIS'."},
-                            {"role": "user", "content": synthesis_prompt}
-                        ],
-                        model="llama-3.3-70b-versatile",
-                        temperature=0.4,
-                        max_tokens=1500,
-                        top_p=0.85,
-                    )
-                    final_response = chat_completion.choices[0].message.content
-                except:
-                    final_response = get_groq_recommendation(synthesis_prompt, st.session_state.groq_api_key)
-                
-                if final_response:
-                    # Always process through translation/summary engine for consistency
-                    with st.spinner(f"🌐 Processing {st.session_state.target_language} summary..."):
-                        translation_result = translate_text(final_response, st.session_state.target_language, st.session_state.groq_api_key)
-                        response = translation_result["detailed"]
-                        voice_summary = translation_result["summary"]
-                    
-                    ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())} → Groq Factual Synthesis)"
-                    st.success(f"✅ **Factual Synthesis & {st.session_state.target_language} Summary Complete!**")
-                    
-                    # Voice Output
-                    if st.session_state.enable_voice:
-                        with st.spinner("🎙️ Generating voice response..."):
-                            speak_text(voice_summary, st.session_state.target_language)
-                else:
-                    # If Groq fails, use the best available response BUT enhance it with Groq
-                    raw_response = ensemble_responses.get('T5-PEFT') or ensemble_responses.get('Ollama') or list(ensemble_responses.values())[0]
-                    
-                    # IMPORTANT: Expand brief response into comprehensive advisory using Groq
-                    expansion_prompt = f"""Based on the brief agricultural insight below, create a COMPREHENSIVE, DETAILED advisory report.
-
-BRIEF INSIGHT:
-{raw_response}
-
-CONTEXT:
-Location: {district}, {state_name if 'state_name' in locals() else state}
+=== PATIENT PROFILE ===
+Location: {district}, {state_name}, India
 Crop: {crop}
-Question: {user_question}
+Current Conditions:
+- Rainfall: {rainfall:.0f}mm (10-year avg) | Temperature: {temperature:.1f}°C (current)
+- Soil: N={nitrogen:.1f} kg/ha, P={phosphorus:.1f} kg/ha, K={potassium:.1f} kg/ha, pH={ph:.2f}
+- Live NDVI: {st.session_state.get('agri_metrics', {}).get('ndvi', 'N/A')}
+- Soil Moisture: {st.session_state.get('agri_metrics', {}).get('soil_moisture', 'N/A')}%
+- ET0: {st.session_state.get('agri_metrics', {}).get('et0', 'N/A')} mm/day
+- 7-Day Forecast Rain: {st.session_state.get('agri_metrics', {}).get('precip_7day', 'N/A')}mm
 
-Expert Advisory Data: {expert_advisory_full[:500] if expert_advisory_full else 'N/A'}
-
-CREATE A DETAILED REPORT with these sections:
-### 📋 IMMEDIATE ACTIONS
-### 🌾 EXPERT INSIGHTS
-### 🌡️ CLIMATE & SOIL ADJUSTMENTS
-### ⚠️ CRITICAL RISKS
-
-Make it specific, actionable, and comprehensive (at least 300 words)."""
-
-                    expanded_response = get_groq_recommendation(expansion_prompt, st.session_state.groq_api_key)
-                    
-                    if expanded_response:
-                        # Use expanded version
-                        translation_result = translate_text(expanded_response, st.session_state.target_language, st.session_state.groq_api_key)
-                        response = translation_result["detailed"]
-                        voice_summary = translation_result["summary"]
-                        ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())}) → Groq Expansion"
-                    else:
-                        # Last resort: use raw response
-                        translation_result = translate_text(raw_response, st.session_state.target_language, st.session_state.groq_api_key)
-                        response = translation_result["detailed"]
-                        voice_summary = translation_result["summary"]
-                        ai_backend_used = f"Ensemble ({', '.join(ensemble_responses.keys())})"
-                    
-                    if st.session_state.enable_voice:
-                        speak_text(voice_summary, st.session_state.target_language)
-        else:
-            # No local models responded - Use Groq DIRECTLY as primary engine
-            st.info("☁️ **Direct Groq Mode**: No local models available. Using Groq API as primary advisor...")
-            with st.spinner("🔄 Groq generating solution..."):
-                try:
-                    import groq
-                    client = groq.Groq(api_key=st.session_state.groq_api_key)
-                    
-                    # Build the full solution-focused prompt for direct Groq use
-                    direct_prompt = f"""You are a village agricultural doctor for {district}, {state_name}.
-
-=== FARMER'S PROBLEM ===
-"{user_question}"
-
-=== GROUND TRUTH DATA FOR {district.upper()}, {state_name.upper()} ===
-• Crop: {crop}
-• 10-Year Avg Rainfall: {rainfall:.0f} mm
-• Current Temperature: {temperature:.1f}°C
-• Soil pH: {ph:.2f}
-• Nitrogen: {nitrogen:.1f}, Phosphorus: {phosphorus:.1f}, Potassium: {potassium:.1f}
-• ML Climate Risk: {risk_pred:.1f}% ({risk_label})
-{f"• Live NDVI: {st.session_state.get('agri_metrics', {}).get('ndvi', 'N/A')} ({st.session_state.get('agri_metrics', {}).get('source', '')})" if st.session_state.get('agri_metrics', {}).get('ndvi') else ""}
-{f"• Live Soil Moisture: {st.session_state.get('agri_metrics', {}).get('soil_moisture', 'N/A')}%" if st.session_state.get('agri_metrics', {}).get('soil_moisture') else ""}
-{f"• Live Evapotranspiration (ET0): {st.session_state.get('agri_metrics', {}).get('et0', 'N/A')} mm/day" if st.session_state.get('agri_metrics', {}).get('et0') else ""}
-{f"• 7-Day Forecasted Rain (Satellite): {st.session_state.get('agri_metrics', {}).get('precip_7day', 'N/A')} mm" if st.session_state.get('agri_metrics', {}).get('precip_7day') else ""}
-
-=== 10-YEAR EXPERT ADVISORY (2015-2024) ===
-{expert_advisory_full if expert_advisory_full else "No multi-year advisory available."}
+=== ML ANALYSIS ===
+- Crop Suitability Score: {crop_pred:.1f}% ({suitability_label})
+- Climate Risk Score: {risk_pred:.1f}% ({risk_label})
 
 === HISTORICAL DATA ===
-{relevant_data if relevant_data else "Limited data."}
+{relevant_data}
 
 === LIVE WEATHER ===
-{live_weather_context if live_weather_context else "Not available."}
+{live_weather_context}
 
-=== PROVIDE A PRESCRIPTION (NOT ADVICE) ===
+=== FARMER'S QUESTION ===
+"{user_question}"
 
-### 💊 Diagnosis
-[What is wrong? Use exact numbers from {district} data]
+=== MANDATORY RESPONSE FORMAT ===
+For {query_analysis['type'].upper()} questions, you MUST use this structure:
 
-### 🛠️ Solution — Do This Now
-[4-5 numbered steps with EXACT product names, dosages in kg/ha, and timing]
+### 🔬 Diagnosis
+- Nitrogen (N): {nitrogen:.1f} kg/ha
+- Phosphorus (P): {phosphorus:.1f} kg/ha
+- Potassium (K): {potassium:.1f} kg/ha
+- pH: {ph:.2f}
+[Explain the problem using these exact numbers]
 
-### 🌿 Low-Cost Organic Alternative
-[2-3 natural methods]
+### 💊 Immediate Treatment (Next 7 Days)
+1. [Product name] - [kg/ha] - [When to apply]
+2. [Product name] - [kg/ha] - [When to apply]
+3. [Action] - [Details]
 
-### 📅 Monthly Calendar
-[3-month action plan]
+### 🌿 Organic Alternative (Low-Cost)
+- [Product] ([kg/ha]) + [Product] ([kg/ha])
+- [Application method]
 
-### ⚠️ Risk Alert for {district}
-[Based on {risk_pred:.1f}% risk score]
+### ⚠️ Risk Alert
+- [Timeline and consequences]
+- [Monitoring instructions]
 
-CRITICAL: Say EXACTLY what to buy, how much, and when. Give a PRESCRIPTION, not advice."""
+**For COMPARISON questions:**
+### 📊 5-Year Comparison Table
+[Copy exact table from HISTORICAL DATA]
 
-                    chat_completion = client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": f"You are a village agricultural doctor for {district}, {state_name}. The farmer asked: '{user_question}'. Soil: pH {ph:.2f}, N={nitrogen:.0f}, P={phosphorus:.0f}, K={potassium:.0f}, rainfall {rainfall:.0f}mm, temp {temperature:.1f}°C. Give a PRESCRIPTION with exact product names, dosages, and timing. Say 'DO THIS', never 'consider'."},
-                            {"role": "user", "content": direct_prompt}
-                        ],
-                        model="llama-3.3-70b-versatile",
-                        temperature=0.4,
-                        max_tokens=1500,
-                        top_p=0.85,
-                    )
-                    raw_response = chat_completion.choices[0].message.content
-                except Exception as e:
-                    st.warning(f"⚠️ Groq Chat API error: {e}")
-                    # Last resort fallback
-                    raw_response = get_groq_recommendation(context, st.session_state.groq_api_key)
-                
-                if raw_response:
-                    with st.spinner(f"🌐 Processing {st.session_state.target_language} summary..."):
-                        translation_result = translate_text(raw_response, st.session_state.target_language, st.session_state.groq_api_key)
-                        response = translation_result["detailed"]
-                        voice_summary = translation_result["summary"]
-                    
-                    if st.session_state.enable_voice:
-                        with st.spinner("🎙️ Generating voice response..."):
-                            speak_text(voice_summary, st.session_state.target_language)
-                    ai_backend_used = "Groq API (Direct — Cloud)"
-                else:
-                    response = None
-                    ai_backend_used = None
+### 🎯 Verdict
+[State which crop depletes MORE with exact percentages]
+
+### 💡 Soil Recovery Strategy
+[Specific fertilizer amounts needed to restore soil after each crop]
+[Crop rotation recommendation with legumes]
+
+**For IRRIGATION questions:**
+### 💧 Water Deficit Calculation
+- Current soil moisture: {st.session_state.get('agri_metrics', {}).get('soil_moisture', 'N/A')}%
+- Wilting point: 15%
+- ET0: {st.session_state.get('agri_metrics', {}).get('et0', 'N/A')} mm/day
+- **Irrigation needed: [Calculate exact hours]**
+
+### 🚰 Application Method
+[Drip/sprinkler specifics with flow rate]
+
+**For CLIMATE RISK questions:**
+### ⛈️ Risk Assessment
+- Historical flood frequency: [From data]
+- 7-day forecast: {st.session_state.get('agri_metrics', {}).get('precip_7day', 'N/A')}mm
+- **Flood Risk Score: [Calculate %]**
+
+### 🛡️ Mitigation Strategy
+[Specific actions with timeline]
+
+**For ECONOMIC questions:**
+### 💰 ROI Analysis
+[Use MSP trend data to calculate expected returns]
+
+### 📈 Market Intelligence
+[5-year price trend with recommendation]
+
+**For PEST/DISEASE questions:**
+### 🐛 Pest Identification
+[Specific pest name based on conditions]
+
+### 💉 Treatment Protocol
+[Chemical: Product + dosage | Organic: Alternative]
+
+### 📅 Application Schedule
+[Day 1, Day 7, Day 14 actions]
+
+**For LONG-TERM STRATEGY questions:**
+### 🌡️ Climate Trend Analysis
+[10-year temperature/rainfall change rate]
+
+### 🌳 Future-Proof Crops
+[3-5 climate-resilient options with rationale]
+
+### 💵 Investment Priority
+[Rank: Seeds vs Fertilizer vs Technology]
+
+=== CRITICAL RULES ===
+1. **MANDATORY**: If HISTORICAL DATA contains a "RESPONSE FRAMEWORK" section, you MUST copy and follow that exact structure
+2. **MANDATORY**: Use EXACT numbers from Current Conditions (N={nitrogen:.1f}, P={phosphorus:.1f}, K={potassium:.1f}, pH={ph:.2f})
+3. NEVER say "consider" or "you may want to" - give DIRECT instructions with product names and kg/ha doses
+4. For NUTRIENT_LOCKUP: Start response with "### 🔬 Diagnosis" then state exact NPK imbalance
+5. For COMPARISON: Copy the comparison table from HISTORICAL DATA, don't create your own
+6. For IRRIGATION_EMERGENCY: Calculate exact pump hours using formula in HISTORICAL DATA
+7. For HEAT_STRESS: Recommend Kaolin clay (50g/L, ₹1,200/ha) as first option
+8. For FLOOD_RISK: State probability percentage and risk level (HIGH/MODERATE/LOW)
+9. Always include costs in Indian Rupees (₹) and dosages in kg/ha or liters/ha
+10. End every response with a timeline or deadline ("Apply TODAY", "Start within 2 hours", etc.)
+
+NOW RESPOND TO THE FARMER'S QUESTION USING THE FORMAT ABOVE."""
+        
+        # ── Build domain-aware Groq payload ──────────────────────────────
+        st.info("🔬 **Domain AI Mode**: Routing to domain-specific expert prompt...")
+
+        groq_payload = build_groq_payload(
+            question        = user_question,
+            district        = district,
+            state           = state_name if "state_name" in locals() else state,
+            crop            = crop,
+            nitrogen        = nitrogen,
+            phosphorus      = phosphorus,
+            potassium       = potassium,
+            ph              = ph,
+            rainfall        = rainfall,
+            temperature     = temperature,
+            agri_metrics    = st.session_state.get("agri_metrics", {}),
+            crop_matches_df = crop_matches if "crop_matches" in locals() and not crop_matches.empty else None,
+            advisory_df     = advisory_df,
+            crop_suitability_score = crop_pred,
+            climate_risk_score     = risk_pred,
+            expert_advisory        = expert_advisory_full if "expert_advisory_full" in locals() else "",
+            live_weather_context   = live_weather_context if "live_weather_context" in locals() else "",
+        )
+
+        detected_domain = groq_payload["domain"]
+        st.caption(f"🎯 Domain detected: **{detected_domain.replace('_', ' ').title()}**")
+
+        # ── Store domain score breakdown in session state ─────────────────
+        st.session_state["domain_score_breakdown"] = groq_payload["score_breakdown"]
+        st.session_state["domain_visuals"]         = groq_payload["visuals"]
+
+        # ── Call Groq with domain system + user prompt ────────────────────
+        raw_response = None
+        ai_backend_used = "Groq Domain Expert"
+
+        # Try local models first as supplementary context
+        ensemble_responses = {}
+
+        if st.session_state.t5_peft_model:
+            with st.spinner("🌾 T5-PEFT analysing..."):
+                t5_resp = generate_with_t5_peft(
+                    groq_payload["user_prompt"],
+                    st.session_state.t5_peft_model,
+                    st.session_state.t5_peft_tokenizer,
+                    max_tokens,
+                )
+                if t5_resp:
+                    ensemble_responses["T5-PEFT"] = t5_resp
+
+        if st.session_state.lora_model:
+            with st.spinner("🌡️ Climate-LoRA analysing..."):
+                lora_resp = generate_with_lora(
+                    groq_payload["user_prompt"],
+                    st.session_state.lora_model,
+                    st.session_state.tokenizer,
+                    max_tokens,
+                )
+                if lora_resp:
+                    ensemble_responses["Climate-LoRA"] = lora_resp
+
+        # Build final user message (append local model insights if available)
+        final_user_msg = groq_payload["user_prompt"]
+        if ensemble_responses:
+            final_user_msg += "\n\n═══ LOCAL MODEL INSIGHTS (use as supporting context) ═══"
+            for model_name, resp in ensemble_responses.items():
+                final_user_msg += f"\n\n--- {model_name} ---\n{resp[:600]}"
+
+        # ── Groq API call ─────────────────────────────────────────────────
+        with st.spinner(f"🤖 Groq [{detected_domain}] expert generating response..."):
+            try:
+                import groq as groq_lib
+                client = groq_lib.Groq(api_key=st.session_state.groq_api_key)
+
+                chat_completion = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": groq_payload["system_prompt"]},
+                        {"role": "user",   "content": final_user_msg},
+                    ],
+                    model="llama-3.3-70b-versatile",
+                    temperature=0.3,
+                    max_tokens=1800,
+                    top_p=0.85,
+                )
+                raw_response = chat_completion.choices[0].message.content
+                ai_backend_used = (
+                    f"Groq [{detected_domain.replace('_',' ').title()}]"
+                    + (f" + {', '.join(ensemble_responses.keys())}" if ensemble_responses else "")
+                )
+
+            except Exception as e:
+                st.warning(f"⚠️ Groq error: {e}")
+                raw_response = None
+
+        # ── Translation / voice ───────────────────────────────────────────
+        if raw_response:
+            with st.spinner(f"🌐 Processing {st.session_state.target_language} summary..."):
+                translation_result = translate_text(
+                    raw_response,
+                    st.session_state.target_language,
+                    st.session_state.groq_api_key,
+                )
+                response    = translation_result["detailed"]
+                voice_summary = translation_result["summary"]
+
+            if st.session_state.enable_voice:
+                with st.spinner("🎙️ Generating voice response..."):
+                    speak_text(voice_summary, st.session_state.target_language)
+        else:
+            response = None
         
         # Error handling - when ALL backends fail
         if not response:
@@ -2574,6 +3094,19 @@ CRITICAL: Say EXACTLY what to buy, how much, and when. Give a PRESCRIPTION, not 
                             st.plotly_chart(fig_soil, use_container_width=True)
                         else:
                             st.info("ℹ️ Nutrient data is available in text format (Medium/High) in the detailed cards below.")
+
+                    st.markdown("---")
+                    st.markdown("#### 📊 Domain-Specific Analytics")
+                    render_domain_visuals(
+                        domain_visuals = st.session_state.get("domain_visuals", []),
+                        crop_matches_df= crop_matches if "crop_matches" in locals() and not crop_matches.empty else None,
+                        agri_metrics   = st.session_state.get("agri_metrics", {}),
+                        weather_data   = weather_data,
+                        soil_params    = {"N": nitrogen, "P": phosphorus, "K": potassium, "pH": ph},
+                        district       = district,
+                        state          = state_name if "state_name" in locals() else state,
+                        crop           = crop,
+                    )
 
             # Helper to create professional cards matching the app theme
             def insight_card(title, content):
@@ -2739,16 +3272,26 @@ with tab2:
                 # Count soil types
                 soil_types = district_data['Soil_Type'].value_counts()
                 most_common_soil = soil_types.index[0] if len(soil_types) > 0 else "N/A"
-                st.metric("Primary Soil Type", most_common_soil)
+                st.markdown("**Primary Soil Type:**")
+                st.info(most_common_soil)
             
             with col3:
-                # NPK analysis (these might be categorical)
-                nitrogen_high = (district_data['Nitrogen'] == 'High').sum()
-                st.metric("High Nitrogen Records", nitrogen_high)
+                # Show Predominant Nitrogen Status
+                n_status = district_data['Nitrogen'].value_counts()
+                most_common_n = n_status.index[0] if not n_status.empty else "N/A"
+                n_high_count = district_data['Nitrogen'].astype(str).str.strip().str.lower().eq('high').sum()
+                
+                st.metric("Primary Nitrogen", most_common_n, delta=f"{n_high_count} High" if n_high_count > 0 else None)
+                st.caption(f"Count: {n_status.get(most_common_n, 0)} records")
             
             with col4:
-                phosphorus_high = (district_data['Phosphorus'] == 'High').sum()
-                st.metric("High Phosphorus Records", phosphorus_high)
+                # Show Predominant Phosphorus Status
+                p_status = district_data['Phosphorus'].value_counts()
+                most_common_p = p_status.index[0] if not p_status.empty else "N/A"
+                p_high_count = district_data['Phosphorus'].astype(str).str.strip().str.lower().eq('high').sum()
+                
+                st.metric("Primary Phosphorus", most_common_p, delta=f"{p_high_count} High" if p_high_count > 0 else None)
+                st.caption(f"Count: {p_status.get(most_common_p, 0)} records")
             
             # Crop Recommendations
             st.markdown("---")
@@ -2791,18 +3334,86 @@ with tab2:
                         st.write(f"- **Temperature:** {crop_specific.get('Mean_Temp_Historical', 'N/A')}°C")
                     
                     with col2:
-                        st.write("**Expert Advisory (English):**")
-                        st.info(crop_specific.get('Expert_Advisory', 'N/A'))
+                        st.markdown("#### ✨ 2026 AI Climate-Smart Advisor")
+                        st.caption(f"Language: {target_language}")
                         
-                        # Multilingual support - using checkbox instead of nested expander
-                        if pd.notna(crop_specific.get('Advisory_Hindi')):
-                            st.markdown("---")
-                            show_translations = st.checkbox(f"🇮🇳 Show in Other Languages", key=f"translate_{crop}")
-                            if show_translations:
-                                st.write("**Hindi (हिन्दी):**")
-                                st.success(crop_specific.get('Advisory_Hindi', 'N/A'))
-                                st.write("**Tamil (தமிழ்):**")
-                                st.success(crop_specific.get('Advisory_Tamil', 'N/A'))
+                        # Gather variables for prompt
+                        avg_rain = district_data['Rainfall_IMD_mm'].mean()
+                        avg_tmp  = district_data['Mean_Temp_Historical'].mean()
+                        msp_val  = crop_specific.get('Historical_MSP_INR', '0')
+                        
+                        # Gather latest session parameters or use dataset averages
+                        params = st.session_state.get('current_params', {
+                            "nitrogen": 50.0,
+                            "phosphorus": 50.0,
+                            "potassium": 50.0,
+                            "ph": 6.5,
+                            "temperature": avg_tmp,
+                            "rainfall": avg_rain,
+                        })
+
+                        # Local Language Selector for this advisory
+                        st.markdown("🌐 **Translate Strategy:**")
+                        advisory_lang = st.selectbox(
+                            "Select Advisory Language:",
+                            ["English", "Hindi (हिंदी)", "Tamil (தமிழ்)", "Telugu (తెలుగు)", "Marathi (मराठी)", "Punjabi (ਪੰਜਾਬੀ)"],
+                            index=["English", "Hindi (हिंदी)", "Tamil (தமிழ்)", "Telugu (తెలుగు)", "Marathi (मराठी)", "Punjabi (ਪੰਜਾਬੀ)"].index(target_language) if target_language in ["English", "Hindi (हिंदी)", "Tamil (தமிழ்)", "Telugu (తెలుగు)", "Marathi (मराठी)", "Punjabi (ਪੰਜਾਬੀ)"] else 0,
+                            key=f"lang_sel_{crop}"
+                        )
+
+                        # Automatic Generation Logic
+                        report_key = f"auto_{selected_district}_{crop}_{advisory_lang}"
+                        
+                        if report_key not in st.session_state.advisory_cache:
+                            with st.spinner(f"📡 AI Scientist analyzing live data for 2026 in {advisory_lang}..."):
+                                auto_prompt = f"""
+                                ROLE: Senior Agricultural Scientist & Expert Advisor
+                                LANGUAGE: {advisory_lang}
+                                LOCATION: {selected_district}, {selected_state}
+                                TARGET YEAR: 2026
+                                
+                                DATA:
+                                1. STATS: 10-Year Rain: {avg_rain:.1f}mm, Temp: {avg_tmp:.1f}°C, MSP: ₹{msp_val}
+                                2. SOIL: N={params['nitrogen']:.1f}, P={params['phosphorus']:.1f}, K={params['potassium']:.1f}, pH={params['ph']:.2f}
+                                3. WEATHER: Live {params['temperature']:.1f}°C
+                                
+                                TASK: Provide a professional 2026 ADVISORY for {crop} in {advisory_lang}.
+                                
+                                STRUCTURE YOUR RESPONSE EXACTLY LIKE THIS:
+                                ### 🌡️ 2026 Climate Forecast
+                                [Content here]
+                                ### 🧪 Specific Soil Fixes
+                                [Content here]
+                                ### 💰 Market & ROI Outlook
+                                [Content here]
+                                ### 🛠️ 2026 Action Plan
+                                [Content here]
+                                ---SUMMARY---
+                                [Very short 1-sentence summary for voice]
+                                """
+                                raw_response = get_groq_recommendation(auto_prompt, st.session_state.groq_api_key)
+                                
+                                if raw_response:
+                                    if "---SUMMARY---" in raw_response:
+                                        parts = raw_response.split("---SUMMARY---")
+                                        st.session_state.advisory_cache[report_key] = {
+                                            "detailed": parts[0].strip(),
+                                            "summary": parts[1].strip()
+                                        }
+                                    else:
+                                        st.session_state.advisory_cache[report_key] = {
+                                            "detailed": raw_response,
+                                            "summary": "Full strategy ready."
+                                        }
+
+                        # Display the cached report beautifully
+                        report = st.session_state.advisory_cache.get(report_key, {})
+                        st.markdown("---")
+                        st.subheader(f"✨ 2026 Expert Strategy: {crop}")
+                        
+                        detailed_text = report.get("detailed", "Strategy loading...")
+                        st.markdown(detailed_text)
+                        
             
             # Historical Trends
             st.markdown("---")
