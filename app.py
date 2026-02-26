@@ -445,11 +445,15 @@ if 't5_peft_tokenizer' not in st.session_state:
     st.session_state.t5_peft_tokenizer = None
 if 'advisory_cache' not in st.session_state:
     st.session_state.advisory_cache = {}
+if 'global_state' not in st.session_state:
+    st.session_state.global_state = 'Tamil Nadu'
+if 'global_district' not in st.session_state:
+    st.session_state.global_district = 'Chennai'
 
 # API Keys - Replace with your own or use Streamlit secrets
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma3:4b"  # Using 4b for faster responses, you can change to "llama3.2:1b" for even faster
-DEFAULT_GROQ_API_KEY = ""  # ENTER YOUR GROQ API KEY HERE
+DEFAULT_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_API_KEY")  # Use environment variable for security
 
 # Initialize API keys in session state
 if 'ollama_host' not in st.session_state:
@@ -1962,7 +1966,42 @@ def render_domain_visuals(
     if charts_rendered == 0:
         st.caption("(No additional domain charts available for this query)")
 
-# Main Interface
+# --- GLOBAL LOCATION SELECTION ---
+# This persistent header ensures location is synchronized across all tabs
+st.markdown("### 📍 Select Your Location")
+glob_col1, glob_col2 = st.columns(2)
+
+with glob_col1:
+    if state_district_mapping:
+        available_states = sorted(state_district_mapping.keys())
+        try:
+            state_idx = available_states.index(st.session_state.global_state)
+        except:
+            state_idx = available_states.index('Tamil Nadu') if 'Tamil Nadu' in available_states else 0
+        state = st.selectbox("🏞️ State", available_states, index=state_idx, key="persistent_state")
+        st.session_state.global_state = state
+    else:
+        state = st.text_input("🏞️ State", st.session_state.global_state, key="persistent_state_text")
+        st.session_state.global_state = state
+
+with glob_col2:
+    if state_district_mapping and state in state_district_mapping:
+        available_districts = state_district_mapping[state]
+        try:
+            dist_idx = list(available_districts).index(st.session_state.global_district)
+        except:
+            dist_idx = 0
+        district = st.selectbox("📍 District", available_districts, index=dist_idx, key="persistent_district")
+        st.session_state.global_district = district
+    else:
+        district = st.text_input("📍 District", st.session_state.global_district, key="persistent_district_text")
+        st.session_state.global_district = district
+
+# Location caption
+location = f"{district}, {state}, India"
+st.caption(f"📌 **Current Analysis Context:** {location}")
+
+# Main Interface Tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "💬 Chatbot & ML Predictions", 
     "🌍 Location Analysis", 
@@ -1983,29 +2022,26 @@ with tab1:
     
     # Input Parameters
     # Selection Row (State, District, Crop)
-    sel_col1, sel_col2, sel_col3 = st.columns(3)
+    # Using the global location (state, district) and adding crop selection
+    sel_col1, sel_col3 = st.columns([1, 1])
     
     with sel_col1:
-        # State selection from CSV
-        if state_district_mapping:
-            available_states = sorted(state_district_mapping.keys())
-            state = st.selectbox("🏞️ State", available_states, 
-                                index=available_states.index('Tamil Nadu') if 'Tamil Nadu' in available_states else 0)
-        else:
-            state = "Tamil Nadu"
-            st.info("📊 Using fallback state")
+        st.info(f"📍 Location: {district}, {state}")
 
-    with sel_col2:
-        # District selection based on selected state
-        if state_district_mapping and state in state_district_mapping:
-            available_districts = state_district_mapping[state]
-            district = st.selectbox("📍 District", available_districts)
+    with sel_col3:
+        # Crop selection
+        if not advisory_df.empty and 'Recommended_Crop' in advisory_df.columns:
+            # Get crops for selected state and district
+            location_crops_df = advisory_df[(advisory_df['State'] == state) & (advisory_df['District'] == district)]
+            if not location_crops_df.empty:
+                available_crops = sorted(location_crops_df['Recommended_Crop'].unique())
+                crop = st.selectbox("🌾 Select Crop", available_crops)
+            else:
+                common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
+                crop = st.selectbox("🌾 Select Crop", common_crops)
         else:
-            district = st.text_input("District", "Chennai")
-            
-        # Update location based on state and district
-        location = f"{district}, {state}, India"
-        st.caption(f"📌 Location: {location}")
+            common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
+            crop = st.selectbox("🌾 Select Crop", common_crops)
 
     with sel_col3:
         # Crop selection
@@ -2253,10 +2289,9 @@ with tab1:
                     csv_lon = sample_row.get('Lon', None)
                     
                     # Aggregate ALL expert advisories across all years
+                    all_advisories = []
                     if 'Expert_Advisory' in crop_matches.columns:
                         all_advisories = crop_matches['Expert_Advisory'].dropna().tolist()
-                    else:
-                        all_advisories = []
                     if all_advisories:
                         expert_advisory_full = "\n\n--- MULTI-YEAR EXPERT ADVISORY (2015-2024) ---\n"
                         for idx, advisory in enumerate(all_advisories[:10], 1):  # Limit to 10 most relevant
@@ -3187,24 +3222,10 @@ NOW RESPOND TO THE FARMER'S QUESTION USING THE FORMAT ABOVE."""
 with tab2:
     st.header("🌍 Location-Based Analysis")
     
-    # Allow district selection directly in this tab
-    st.subheader("📍 Select Location for Analysis")
-    col_select1, col_select2 = st.columns(2)
-    
-    with col_select1:
-        if state_district_mapping:
-            available_states = sorted(state_district_mapping.keys())
-            selected_state = st.selectbox("🏞️ Select State", available_states, key="tab2_state", 
-                                         index=available_states.index('Tamil Nadu') if 'Tamil Nadu' in available_states else 0)
-        else:
-            selected_state = st.text_input("State", "Tamil Nadu", key="tab2_state")
-    
-    with col_select2:
-        if state_district_mapping and selected_state in state_district_mapping:
-            available_districts = state_district_mapping[selected_state]
-            selected_district = st.selectbox("📍 Select District", available_districts, key="tab2_district")
-        else:
-            selected_district = st.text_input("District", "Chennai", key="tab2_district")
+    # The analysis now inherits the location from the global selector
+    selected_state = state
+    selected_district = district
+    st.info(f"📊 Analyzing data for **{selected_district}, {selected_state}**")
     
     st.markdown("---")
     
@@ -3459,24 +3480,21 @@ with tab3:
     if advisory_df.empty:
         st.info("Dataset not available for visualizations")
     else:
-        # District selection for visualizations
-        st.subheader("� Select Location for Visualization")
-        col_viz1, col_viz2 = st.columns(2)
+        # Use global state and allow optional district selection (All vs Specific)
+        viz_state = state
         
-        with col_viz1:
-            if state_district_mapping:
-                available_states = sorted(state_district_mapping.keys())
-                viz_state = st.selectbox("🏞️ Select State", available_states, key="tab3_state",
-                                        index=available_states.index('Tamil Nadu') if 'Tamil Nadu' in available_states else 0)
-            else:
-                viz_state = st.text_input("State", "Tamil Nadu", key="tab3_state")
-        
-        with col_viz2:
+        st.subheader(f"📍 Visualization Settings for {viz_state}")
+        col_viz_opts = st.columns(1)
+        with col_viz_opts[0]:
             if state_district_mapping and viz_state in state_district_mapping:
-                available_districts = ["All Districts"] + state_district_mapping[viz_state]
-                viz_district = st.selectbox("📍 Select District", available_districts, key="tab3_district")
+                opts = ["All Districts"] + list(state_district_mapping[viz_state])
+                try:
+                    curr_idx = opts.index(district) if district in opts else 0
+                except:
+                    curr_idx = 0
+                viz_district = st.selectbox("📍 Focus District", opts, index=curr_idx, key="viz_dist_focus")
             else:
-                viz_district = st.text_input("District (or 'All Districts')", "All Districts", key="tab3_district")
+                viz_district = "All Districts"
         
         st.markdown("---")
         
@@ -3586,56 +3604,65 @@ with tab3:
             st.subheader("🧪 Soil Nutrient Analysis (NPK)")
             
             if all(col in filtered_data.columns for col in ['Nitrogen', 'Phosphorus', 'Potassium']):
-                # Create nutrient comparison
-                nutrient_summary = pd.DataFrame({
-                    'Nutrient': ['Nitrogen', 'Phosphorus', 'Potassium'],
-                    'High': [
-                        (filtered_data['Nitrogen'] == 'High').sum(),
-                        (filtered_data['Phosphorus'] == 'High').sum(),
-                        (filtered_data['Potassium'] == 'High').sum()
-                    ],
-                    'Medium': [
-                        (filtered_data['Nitrogen'] == 'Medium').sum(),
-                        (filtered_data['Phosphorus'] == 'Medium').sum(),
-                        (filtered_data['Potassium'] == 'Medium').sum()
-                    ],
-                    'Low': [
-                        (filtered_data['Nitrogen'] == 'Low').sum(),
-                        (filtered_data['Phosphorus'] == 'Low').sum(),
-                        (filtered_data['Potassium'] == 'Low').sum()
-                    ]
-                })
+                # NEW: Nutrient Strength Profile (Intensity 1-3)
+                # This shows the "actual" level (High=3, Med=2, Low=1) instead of just count bars
+                status_map = {'high': 3, 'medium': 2, 'low': 1}
+                def get_level(col):
+                    val = district_data[col].iloc[-1] if not district_data.empty else 'Low'
+                    return status_map.get(str(val).strip().lower(), 1)
                 
+                intensity_df = pd.DataFrame({
+                    'Nutrient': ['Nitrogen', 'Phosphorus', 'Potassium'],
+                    'Strength Level': [get_level('Nitrogen'), get_level('Phosphorus'), get_level('Potassium')],
+                    'Status': [district_data['Nitrogen'].iloc[-1], district_data['Phosphorus'].iloc[-1], district_data['Potassium'].iloc[-1]]
+                })
+
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    fig4 = px.bar(
-                        nutrient_summary, 
-                        x='Nutrient', 
-                        y=['High', 'Medium', 'Low'],
-                        title="Soil Nutrient Levels Distribution", 
-                        barmode='group',
-                        color_discrete_map={'High': '#27ae60', 'Medium': '#f39c12', 'Low': '#e74c3c'}
+                    # Bar Chart of Levels
+                    fig_intensity = px.bar(
+                        intensity_df,
+                        x='Nutrient',
+                        y='Strength Level',
+                        color='Status',
+                        range_y=[0, 3.5],
+                        title=f"Nutrient Strength (1-3) — {selected_district}",
+                        color_discrete_map={'High': '#27ae60', 'Medium': '#f39c12', 'Low': '#e74c3c'},
+                        text='Status'
                     )
-                    st.plotly_chart(fig4, use_container_width=True)
+                    fig_intensity.update_layout(yaxis_tickvals=[1, 2, 3], yaxis_ticktext=['Low', 'Medium', 'High'])
+                    st.plotly_chart(fig_intensity, use_container_width=True)
                 
                 with col2:
-                    # Stacked percentage
-                    nutrient_summary['Total'] = nutrient_summary['High'] + nutrient_summary['Medium'] + nutrient_summary['Low']
-                    nutrient_summary['High_%'] = (nutrient_summary['High'] / nutrient_summary['Total'] * 100).round(1)
-                    nutrient_summary['Medium_%'] = (nutrient_summary['Medium'] / nutrient_summary['Total'] * 100).round(1)
-                    nutrient_summary['Low_%'] = (nutrient_summary['Low'] / nutrient_summary['Total'] * 100).round(1)
-                    
-                    fig4b = px.bar(
-                        nutrient_summary,
-                        x='Nutrient',
-                        y=['High_%', 'Medium_%', 'Low_%'],
-                        title="Nutrient Levels (% Distribution)",
-                        barmode='stack',
-                        labels={'value': 'Percentage', 'variable': 'Level'},
-                        color_discrete_map={'High_%': '#27ae60', 'Medium_%': '#f39c12', 'Low_%': '#e74c3c'}
+                    # Radar/Polar chart for "Actual" nutrient balance
+                    fig_radar = px.line_polar(
+                        intensity_df, 
+                        r='Strength Level', 
+                        theta='Nutrient', 
+                        line_close=True,
+                        title="Soil Health Balance Profile",
+                        range_r=[0, 3]
                     )
-                    st.plotly_chart(fig4b, use_container_width=True)
+                    fig_radar.update_traces(fill='toself', line_color='#2E7D32')
+                    st.plotly_chart(fig_radar, use_container_width=True)
+                
+                # NEW: Actual Variation across Districts (Visible when State is filtered)
+                if viz_district == "All Districts" and len(filtered_data['District'].unique()) > 1:
+                    st.markdown("---")
+                    st.subheader(f"📊 Nutrient Variation Across Districts in {viz_state}")
+                    
+                    # Prepare data for district comparison
+                    dist_compare = filtered_data.groupby(['District', 'Nitrogen']).size().unstack(fill_value=0)
+                    # Use absolute counts to show scale
+                    fig_dist_n = px.bar(
+                        dist_compare, 
+                        title="Nitrogen Status by District",
+                        labels={'value': 'Record Count', 'Nitrogen': 'Status'},
+                        color_discrete_map={'High': '#27ae60', 'Medium': '#f39c12', 'Low': '#e74c3c'},
+                        height=400
+                    )
+                    st.plotly_chart(fig_dist_n, use_container_width=True)
             
             # Historical Trends (if Year column exists)
             if 'Year' in filtered_data.columns and len(filtered_data['Year'].unique()) > 1:

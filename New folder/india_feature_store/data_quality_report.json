@@ -1,0 +1,25 @@
+{
+  "merge_timestamp": "2026-01-29T00:18:45.756296",
+  "input_files": {
+    "unified": "India_Agri_Intelligence_Final\\Unified_Decadal_Master_2015_2024.csv",
+    "smart_advisory": "India_Agri_Intelligence_Final\\Smart_Advisory_Reports_All.csv",
+    "multilingual": "India_Agri_Intelligence_Final\\Multilingual_Expert_Advisory.csv"
+  },
+  "row_counts": {
+    "unified_original": 6690,
+    "smart_advisory": 6690,
+    "multilingual": 6690,
+    "merged_feature_store": 6720
+  },
+  "coverage": {
+    "years_min": 2015,
+    "years_max": 2024,
+    "states": 36,
+    "districts": 667,
+    "advisory_match_rate": "100.00%"
+  },
+  "data_quality_checks": {
+    "missing_translations": 0,
+    "advisory_alignment": "Perfect"
+  }
+}
