@@ -11,9 +11,9 @@ INPUT_CSV = "India_Agri_Intelligence_Final/Unified_Decadal_Master_2015_2024.csv"
 OUTPUT_CSV = "India_Agri_Intelligence_Final/Smart_Advisory_Reports_All.csv"
 
 # GROQ API KEYS (Rotating Pool for Parallel Speed)
+# Set one or more comma-separated keys in GROQ_API_KEYS.
 GROQ_API_KEYS = [
-    os.getenv("GROQ_API_KEY_1", "YOUR_API_KEY_1"),
-    os.getenv("GROQ_API_KEY_2", "YOUR_API_KEY_2")
+    key.strip() for key in os.getenv("GROQ_API_KEYS", "").split(",") if key.strip()
 ]
 
 # API Settings
@@ -22,6 +22,9 @@ MAX_WORKERS = 2    # Balanced for 2 active keys
 DELAY_SECONDS = 15 # Adjusted for larger batch size to stay under TPM limits
 
 # Initialize Client Pool
+if not GROQ_API_KEYS:
+    raise ValueError("No Groq API keys found. Set GROQ_API_KEYS environment variable.")
+
 CLIENTS = [Groq(api_key=key) for key in GROQ_API_KEYS]
 MODEL = "llama-3.1-8b-instant" 
 

@@ -4,14 +4,34 @@
 def analyze_query_type(question: str) -> dict:
     """Detect query type and extract required calculations"""
     q = question.lower()
-    
+
+    # ── Season detection (check before anything else) ─────────────────
+    # Maps common user phrases to canonical season names
+    _SEASON_KEYWORDS: dict = {
+        "Kharif":    ["kharif", "kharif crop", "monsoon crop", "sown in june", "sown in july",
+                      "paddy sowing", "cotton sowing", "soybean season"],
+        "Rabi":      ["rabi", "rabi crop", "winter crop", "sown in october", "sown in november",
+                      "wheat sowing", "mustard season", "gram season", "chickpea season"],
+        "Zaid":      ["zaid", "zaid crop", "summer crop", "summer season", "march planting",
+                      "april planting", "watermelon season", "muskmelon season"],
+        "Perennial": ["perennial", "tree crop", "fruit crop", "mango orchard",
+                      "banana plantation", "coconut farm"],
+        "Annual":    ["annual crop", "sugarcane season", "makhana season"],
+    }
+    detected_season = "All"  # default: no specific season detected
+    for season_name, kws in _SEASON_KEYWORDS.items():
+        if any(kw in q for kw in kws):
+            detected_season = season_name
+            break
+
     analysis = {
         "type": "general",
         "requires_calculation": False,
         "specific_data_needed": [],
         "calculation_hints": "",
         "response_style": "prescriptive",  # prescriptive vs descriptive
-        "visual_analytics": []  # List of charts to generate
+        "visual_analytics": [],  # List of charts to generate
+        "detected_season": detected_season,  # ← NEW: season extracted from question
     }
     
     # Soil Health & Nutrient queries (MUST check comparison first!)
@@ -440,7 +460,20 @@ def analyze_query_type(question: str) -> dict:
         analysis["requires_calculation"] = True
         analysis["specific_data_needed"] = ["10year_temp_trend", "10year_rainfall_trend"]
         analysis["calculation_hints"] = "If temp increasing 0.2°C/year, by 2030 will be +1.2°C. Recommend heat-tolerant crops like millets, drought-resistant varieties."
-    
+
+    # ── Override detected_season with seasonal_shift classification if needed ──
+    # If the question contains seasonal shift / planning keywords, upgrade season detection
+    if any(kw in q for kw in ["kharif to rabi", "rabi to kharif", "season change",
+                                "seasonal shift", "seasonal planning", "next season"]):
+        analysis["type"] = "seasonal_shift"
+        analysis["requires_calculation"] = True
+        analysis["specific_data_needed"] = ["rainfall_forecast", "temperature_trend",
+                                              "crop_calendar", "season_transition"]
+        analysis["calculation_hints"] = (
+            "Seasonal shift queries require identifying the transition between Kharif/Rabi/Zaid "
+            "and recommending appropriate crops for the upcoming season."
+        )
+
     return analysis
 
 def build_enhanced_context(question: str, base_context: str, query_analysis: dict, 

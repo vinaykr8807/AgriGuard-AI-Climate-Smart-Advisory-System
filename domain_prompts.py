@@ -155,6 +155,7 @@ def build_domain_context(
     agri_metrics: Dict[str, Any],
     crop_matches_df,          # historical DataFrame for this district+crop
     advisory_df,              # full advisory DataFrame
+    season: str = "All",      # ← NEW: "Kharif" | "Rabi" | "Zaid" | "Annual" | "Perennial" | "All"
 ) -> str:
     """
     Returns a pre-computed facts block (plain text) that is inserted
@@ -166,9 +167,12 @@ def build_domain_context(
     precip_7day = agri_metrics.get("precip_7day") or 0.0
     soil_temp = agri_metrics.get("soil_temp") or temperature
 
+    season_label = season if season != "All" else "All seasons"
+
     lines: List[str] = [
         f"=== DISTRICT-SPECIFIC GROUND TRUTH: {district.upper()}, {state.upper()} ===",
         f"Crop Under Analysis : {crop}",
+        f"Planting Season     : {season_label}",    # ← season injected here
         f"Soil Nutrients      : N={nitrogen:.1f} kg/ha | P={phosphorus:.1f} kg/ha | K={potassium:.1f} kg/ha | pH={ph:.2f}",
         f"Live Weather        : Temp={temperature:.1f}°C | Rainfall(10yr avg)={rainfall:.0f}mm",
         f"Satellite (Live)    : NDVI={ndvi:.3f} | Soil Moisture={soil_moisture:.1f}% | Soil Temp={soil_temp:.1f}°C",
@@ -654,16 +658,24 @@ def _longterm_sustainability_facts(df, temperature, rainfall, ndvi, soil_moistur
 
 def get_domain_system_prompt(domain: str, district: str, state: str, crop: str,
                               nitrogen: float, phosphorus: float, potassium: float,
-                              ph: float, rainfall: float, temperature: float) -> str:
+                              ph: float, rainfall: float, temperature: float,
+                              season: str = "All") -> str:
     """
     Returns the Groq system prompt tailored to the domain.
     Each domain has a distinct expert persona, output format rules,
     and mandatory data-use instructions.
     """
+    season_note = (
+        f"The farmer is in the {season} season. All sowing dates, pesticide timing, "
+        f"fertiliser schedules, and water requirements MUST reflect {season} conditions. "
+        if season != "All"
+        else ""
+    )
     base_rule = (
         f"You are advising a farmer in {district}, {state}, India growing {crop}. "
         f"Ground truth: pH={ph:.2f}, N={nitrogen:.0f}, P={phosphorus:.0f}, K={potassium:.0f} kg/ha, "
         f"Rainfall={rainfall:.0f}mm, Temp={temperature:.1f}°C. "
+        f"{season_note}"
         f"ALWAYS use these exact numbers. NEVER say 'consider' — say 'DO THIS'. "
         f"Give product names, exact kg/ha doses, timing, and costs in Indian Rupees (₹)."
     )

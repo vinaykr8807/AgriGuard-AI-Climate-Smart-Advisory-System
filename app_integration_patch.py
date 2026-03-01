@@ -62,6 +62,12 @@ PATCH_B = '''
             climate_risk_score     = risk_pred,
             expert_advisory        = expert_advisory_full if "expert_advisory_full" in locals() else "",
             live_weather_context   = live_weather_context if "live_weather_context" in locals() else "",
+            # ── Season context (prefer query-detected season over UI widget) ──
+            season = (
+                query_analysis.get("detected_season", "All")
+                if query_analysis.get("detected_season", "All") != "All"
+                else st.session_state.get("selected_season", "All")
+            ),
         )
 
         detected_domain = groq_payload["domain"]

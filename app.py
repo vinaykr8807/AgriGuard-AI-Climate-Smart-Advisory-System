@@ -27,6 +27,13 @@ from gtts import gTTS
 # Domain-specific prompt engine
 from domain_prompts import build_groq_payload
 
+# IMD Agromet Scraper (live crop advisory)
+try:
+    import imd_scraper
+    IMD_SCRAPER_AVAILABLE = True
+except ImportError:
+    IMD_SCRAPER_AVAILABLE = False
+
 # Language Mapping for Translation & Voice
 LANG_MAP = {
     "Hindi (हिंदी)": {"code": "hi", "tld": "co.in", "name": "Hindi"},
@@ -345,6 +352,31 @@ def load_csv_data():
 # Initial load
 features_df, advisory_df, state_district_mapping = load_csv_data()
 
+# ── IMD Scraper cache helper (Streamlit cached for performance) ────
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_imd_crops(state: str, district: str, season: str = "All"):
+    """Fetch season-filtered IMD crop recommendations with 1-hr Streamlit cache.
+
+    Args:
+        state:    State name, e.g. "Punjab"
+        district: District name, e.g. "Amritsar"
+        season:   "Kharif" | "Rabi" | "Zaid" | "Annual" | "Perennial" | "All"
+
+    Returns:
+        List of crop strings, filtered by season when season != "All".
+    """
+    if IMD_SCRAPER_AVAILABLE and state and district:
+        try:
+            if season and season != "All":
+                # Use new season-aware API
+                crops = imd_scraper.get_crops_by_season(state, district, season)
+            else:
+                crops = imd_scraper.get_crops_for_location(state, district)
+            return crops if crops else []
+        except Exception:
+            return []
+    return []
+
 # Custom CSS
 st.markdown("""
 <style>
@@ -453,7 +485,7 @@ if 'global_district' not in st.session_state:
 # API Keys - Replace with your own or use Streamlit secrets
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma3:4b"  # Using 4b for faster responses, you can change to "llama3.2:1b" for even faster
-DEFAULT_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_API_KEY")  # Use environment variable for security
+DEFAULT_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "ENTER_YOUR_GROQ_API_KEY")
 
 # Initialize API keys in session state
 if 'ollama_host' not in st.session_state:
@@ -2001,6 +2033,22 @@ with glob_col2:
 location = f"{district}, {state}, India"
 st.caption(f"📌 **Current Analysis Context:** {location}")
 
+# ── IMD Live Crop Data Status Badge ─────────────────────────────
+if IMD_SCRAPER_AVAILABLE:
+    cache_info = imd_scraper.get_cache_status()
+    if cache_info["is_fresh"]:
+        st.success(
+            f"🌐 **IMD Advisory Cache Active** — "
+            f"{cache_info['states']} states indexed | "
+            f"Built {cache_info['age_hours']}h ago",
+            icon="✅"
+        )
+    else:
+        st.info(
+            "🌐 **IMD Live Mode** — Crop data will be fetched live from agromet.imd.gov.in",
+            icon="📡"
+        )
+
 # Main Interface Tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "💬 Chatbot & ML Predictions", 
@@ -2027,37 +2075,53 @@ with tab1:
     
     with sel_col1:
         st.info(f"📍 Location: {district}, {state}")
+        if st.button("🧹 Clear Cache", help="Clear all stored crop & weather data to refresh"):
+            st.cache_data.clear()
+            st.success("Cache cleared! Selecting again will show fresh data.")
+            st.rerun()
 
     with sel_col3:
-        # Crop selection
-        if not advisory_df.empty and 'Recommended_Crop' in advisory_df.columns:
-            # Get crops for selected state and district
-            location_crops_df = advisory_df[(advisory_df['State'] == state) & (advisory_df['District'] == district)]
-            if not location_crops_df.empty:
-                available_crops = sorted(location_crops_df['Recommended_Crop'].unique())
-                crop = st.selectbox("🌾 Select Crop", available_crops)
+        # ── SEASON FILTER + ACCURATE CROP SELECTION ────────────────────────
+        # 1. Season selector — narrows crop list to the relevant planting season
+        season_options = ["All", "Kharif", "Rabi", "Zaid", "Annual", "Perennial"]
+        selected_season = st.selectbox(
+            "🗓️ Season",
+            season_options,
+            index=0,
+            help="Kharif=Jun–Nov | Rabi=Oct–Mar | Zaid=Mar–Jun | All=show every crop",
+        )
+        st.session_state["selected_season"] = selected_season
+
+        # 2. Primary: Fetch from IMD scraper (Curated DB → JSON Cache → Live)
+        imd_crops = (
+            fetch_imd_crops(state, district, selected_season)
+            if IMD_SCRAPER_AVAILABLE
+            else []
+        )
+
+        if imd_crops:
+            # We found accurate curated/live crops
+            crop = st.selectbox("🌾 Select Crop", imd_crops)
+            season_label = f" [{selected_season}]" if selected_season != "All" else ""
+            st.caption(f"🌐 Data: Accurate District Registry / IMD Advisory{season_label}")
+        else:
+            # Fallback to local CSV (filtered to specific state/district)
+            if not advisory_df.empty and 'Recommended_Crop' in advisory_df.columns:
+                location_crops_df = advisory_df[(advisory_df['State'] == state) & (advisory_df['District'] == district)]
+                if not location_crops_df.empty:
+                    available_crops = sorted(location_crops_df['Recommended_Crop'].unique())
+                    crop = st.selectbox("🌾 Select Crop", available_crops)
+                    st.caption("📊 Data: Local Advisory Dataset")
+                else:
+                    # Final fallback: Hardcoded common crops
+                    common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean", "Groundnut"]
+                    crop = st.selectbox("🌾 Select Crop", common_crops)
+                    st.caption("📋 Data: Generic Regional Defaults")
             else:
-                common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
+                common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean", "Groundnut"]
                 crop = st.selectbox("🌾 Select Crop", common_crops)
-        else:
-            common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
-            crop = st.selectbox("🌾 Select Crop", common_crops)
+                st.caption("📋 Data: Generic Regional Defaults")
 
-    with sel_col3:
-        # Crop selection
-        if not advisory_df.empty and 'Recommended_Crop' in advisory_df.columns:
-            # Get crops for selected state and district
-            location_crops_df = advisory_df[(advisory_df['State'] == state) & (advisory_df['District'] == district)]
-            if not location_crops_df.empty:
-                available_crops = location_crops_df['Recommended_Crop'].unique()
-                crop = st.selectbox("🌾 Crop", available_crops)
-            else:
-                common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
-                crop = st.selectbox("🌾 Crop", common_crops)
-        else:
-            common_crops = ["Rice", "Wheat", "Cotton", "Sugarcane", "Maize", "Potato", "Onion", "Tomato", "Soybean"]
-            crop = st.selectbox("🌾 Crop", common_crops)
-    
     # --- AUTOMATIC ENVIRONMENT DETECTION & WEATHER FETCHING ---
     with st.spinner("🔍 Detecting local environment..."):
         # 1. Get coordinates from CSV for selected location
